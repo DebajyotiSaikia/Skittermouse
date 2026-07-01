@@ -11,6 +11,6 @@ int main() {
     run_server_election_tests();
     run_e2e_mesh_tests();
 
-    std::printf("\n%d checks, %d failure(s)\n", qqtest::g_checks, qqtest::g_failures);
-    return qqtest::g_failures == 0 ? 0 : 1;
+    std::printf("\n%d checks, %d failure(s)\n", smtest::g_checks, smtest::g_failures);
+    return smtest::g_failures == 0 ? 0 : 1;
 }

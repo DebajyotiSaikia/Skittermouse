@@ -1,4 +1,0 @@
-// Windows application icon for qqmouse.exe.
-// CMake adds packaging/ to the resource include path so "qqmouse.ico" resolves.
-// Resource id 1 makes this the executable's default icon (Explorer, taskbar).
-1 ICON "qqmouse.ico"

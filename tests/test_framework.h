@@ -6,7 +6,7 @@
 
 #include <cstdio>
 
-namespace qqtest {
+namespace smtest {
 
 inline int g_checks = 0;
 inline int g_failures = 0;
@@ -19,10 +19,10 @@ inline void report(bool ok, const char* expr, const char* file, int line) {
     }
 }
 
-} // namespace qqtest
+} // namespace smtest
 
-#define QQ_CHECK(cond) \
-    ::qqtest::report((cond), #cond, __FILE__, __LINE__)
+#define SM_CHECK(cond) \
+    ::smtest::report((cond), #cond, __FILE__, __LINE__)
 
-#define QQ_CHECK_EQ(a, b) \
-    ::qqtest::report((a) == (b), #a " == " #b, __FILE__, __LINE__)
+#define SM_CHECK_EQ(a, b) \
+    ::smtest::report((a) == (b), #a " == " #b, __FILE__, __LINE__)

@@ -1,6 +1,6 @@
 {
-  "name": "QQMouse",
-  "short_name": "QQMouse",
+  "name": "Skittermouse",
+  "short_name": "Skittermouse",
   "description": "A native software KVM for Windows and macOS — one keyboard and mouse for all your computers.",
   "start_url": "/",
   "display": "standalone",

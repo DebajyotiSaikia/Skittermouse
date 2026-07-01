@@ -6,8 +6,8 @@
 
 #include <string>
 
-namespace qq::core {
+namespace sm::core {
 
 using PeerId = std::string;
 
-} // namespace qq::core
+} // namespace sm::core

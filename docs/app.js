@@ -1,16 +1,16 @@
-/* QQMouse site behaviour: 3-state theme toggle + OS-aware download links.
+/* Skittermouse site behaviour: 3-state theme toggle + OS-aware download links.
    Vanilla JS, no dependencies. */
 
 (function () {
   "use strict";
 
-  var STORAGE_KEY = "qqmouse-theme";
+  var STORAGE_KEY = "skittermouse-theme";
   var root = document.documentElement;
 
-  var REPO = "https://github.com/DebajyotiSaikia/QQMouse";
+  var REPO = "https://github.com/DebajyotiSaikia/Skittermouse";
   var LATEST = REPO + "/releases/latest"; // parent: all latest downloads
-  var WIN_URL = LATEST + "/download/QQMouse-Windows-x64-Setup.exe";
-  var MAC_URL = LATEST + "/download/QQMouse-macOS.dmg";
+  var WIN_URL = LATEST + "/download/Skittermouse-Windows-x64-Setup.exe";
+  var MAC_URL = LATEST + "/download/Skittermouse-macOS.dmg";
 
   var darkMQ = window.matchMedia("(prefers-color-scheme: dark)");
 

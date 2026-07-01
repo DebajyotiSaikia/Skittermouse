@@ -1,4 +1,4 @@
-# QQMouse
+# Skittermouse
 
 A lightweight, native **software KVM** for Windows and macOS: one physical mouse and
 keyboard controlling multiple computers, with switching by global hotkey and system
@@ -11,9 +11,9 @@ video.
 Website: **[mouse.deb0.com](https://mouse.deb0.com)** — it auto-detects your OS and points
 to the right installer.
 
-- Windows: [QQMouse-Windows-x64-Setup.exe](https://github.com/DebajyotiSaikia/QQMouse/releases/latest/download/QQMouse-Windows-x64-Setup.exe)
-- macOS: [QQMouse-macOS.dmg](https://github.com/DebajyotiSaikia/QQMouse/releases/latest/download/QQMouse-macOS.dmg)
-- [All releases](https://github.com/DebajyotiSaikia/QQMouse/releases/latest)
+- Windows: [Skittermouse-Windows-x64-Setup.exe](https://github.com/DebajyotiSaikia/Skittermouse/releases/latest/download/Skittermouse-Windows-x64-Setup.exe)
+- macOS: [Skittermouse-macOS.dmg](https://github.com/DebajyotiSaikia/Skittermouse/releases/latest/download/Skittermouse-macOS.dmg)
+- [All releases](https://github.com/DebajyotiSaikia/Skittermouse/releases/latest)
 
 Installers are built automatically every night (when there are new commits) by
 [.github/workflows/nightly-release.yml](.github/workflows/nightly-release.yml) and are

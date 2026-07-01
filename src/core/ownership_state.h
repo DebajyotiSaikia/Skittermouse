@@ -11,7 +11,7 @@
 
 #include "core/peer_id.h"
 
-namespace qq::core {
+namespace sm::core {
 
 // A request to change which machine owns input. Broadcast to the WHOLE mesh, not
 // sent privately to the target, so every machine's view stays consistent
@@ -60,4 +60,4 @@ private:
     uint64_t clock_;
 };
 
-} // namespace qq::core
+} // namespace sm::core

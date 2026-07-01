@@ -1,13 +1,13 @@
-QQMouse — End User License Agreement and Terms of Use
+Skittermouse — End User License Agreement and Terms of Use
 
 Last updated: July 2026
 
-PLEASE READ THESE TERMS CAREFULLY. By installing or using QQMouse (the
+PLEASE READ THESE TERMS CAREFULLY. By installing or using Skittermouse (the
 "Software"), you agree to be bound by them. If you do not agree, do not install
 or use the Software.
 
 1. License
-QQMouse is provided free of charge. You are granted a personal, non-exclusive,
+Skittermouse is provided free of charge. You are granted a personal, non-exclusive,
 non-transferable license to install and use the Software on devices that you own
 or are authorized to control, for lawful purposes only.
 
@@ -17,7 +17,7 @@ builds. It may be incomplete, may change without notice, and may not work as
 expected. You use it at your own risk.
 
 3. Acceptable use
-QQMouse forwards keyboard, mouse, clipboard, and file-transfer input between
+Skittermouse forwards keyboard, mouse, clipboard, and file-transfer input between
 computers that you pair together. You may only use it to control computers that
 you own or are authorized to control. You must not use the Software to access,
 monitor, or interfere with any device, network, or data without authorization.
@@ -48,4 +48,4 @@ These terms may be updated for future versions. The version packaged with each
 release governs that release.
 
 9. Contact
-Questions: https://github.com/DebajyotiSaikia/QQMouse
+Questions: https://github.com/DebajyotiSaikia/Skittermouse

@@ -1,0 +1,4 @@
+// Windows application icon for skittermouse.exe.
+// CMake adds packaging/ to the resource include path so "skittermouse.ico" resolves.
+// Resource id 1 makes this the executable's default icon (Explorer, taskbar).
+1 ICON "skittermouse.ico"

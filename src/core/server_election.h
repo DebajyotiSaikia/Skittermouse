@@ -24,7 +24,7 @@
 
 #include "core/peer_id.h"
 
-namespace qq::core {
+namespace sm::core {
 
 class ServerElection {
 public:
@@ -63,4 +63,4 @@ private:
     static void eraseValue(std::vector<PeerId>& v, const PeerId& id);
 };
 
-} // namespace qq::core
+} // namespace sm::core

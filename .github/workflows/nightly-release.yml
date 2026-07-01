@@ -2,8 +2,8 @@ name: Nightly Release
 
 # Builds Windows and macOS installers and publishes them to a rolling "nightly"
 # GitHub Release, so the site can always link to:
-#   .../releases/latest/download/QQMouse-Windows-x64-Setup.exe
-#   .../releases/latest/download/QQMouse-macOS.dmg
+#   .../releases/latest/download/Skittermouse-Windows-x64-Setup.exe
+#   .../releases/latest/download/Skittermouse-macOS.dmg
 #
 # Runs every day at 00:00 UTC, but only builds when something was committed in the
 # last 24 hours (per the request). Can also be run manually, which always builds.
@@ -68,7 +68,7 @@ jobs:
         run: choco install nsis --no-progress -y
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQQ_BUILD_TESTS=OFF
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSM_BUILD_TESTS=OFF
 
       - name: Build
         run: cmake --build build --config Release
@@ -80,7 +80,7 @@ jobs:
           cpack --config build/CPackConfig.cmake -G NSIS -C Release -B build/_pkg
           New-Item -ItemType Directory -Force dist | Out-Null
           $exe = Get-ChildItem build/_pkg/*.exe | Select-Object -First 1
-          Copy-Item $exe.FullName dist/QQMouse-Windows-x64-Setup.exe
+          Copy-Item $exe.FullName dist/Skittermouse-Windows-x64-Setup.exe
 
       - name: Package installer (macOS)
         if: runner.os == 'macOS'
@@ -89,7 +89,7 @@ jobs:
           cpack --config build/CPackConfig.cmake -G DragNDrop -C Release -B build/_pkg
           mkdir -p dist
           dmg=$(ls build/_pkg/*.dmg | head -n 1)
-          cp "$dmg" dist/QQMouse-macOS.dmg
+          cp "$dmg" dist/Skittermouse-macOS.dmg
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -128,8 +128,8 @@ jobs:
           notes=$(cat <<EOF
           Automated nightly build from \`${short}\` on ${date} (UTC).
 
-          - Windows installer: \`QQMouse-Windows-x64-Setup.exe\`
-          - macOS disk image: \`QQMouse-macOS.dmg\`
+          - Windows installer: \`Skittermouse-Windows-x64-Setup.exe\`
+          - macOS disk image: \`Skittermouse-macOS.dmg\`
 
           These are early, **unsigned** development builds — Windows SmartScreen and
           macOS Gatekeeper may warn on first launch.
@@ -138,7 +138,7 @@ jobs:
           # Roll the tag/release forward to the current commit so "latest" tracks it.
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
           gh release create nightly dist/* \
-            --title "QQMouse Nightly ${date}" \
+            --title "Skittermouse Nightly ${date}" \
             --notes "${notes}" \
             --latest \
             --target "${GITHUB_SHA}"

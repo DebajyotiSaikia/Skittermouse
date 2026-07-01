@@ -1,8 +1,8 @@
-# QQMouse — Cross-Platform Software KVM — Build Specification
+# Skittermouse — Cross-Platform Software KVM — Build Specification
 
-> This file is the persistent design specification and source of truth for QQMouse.
+> This file is the persistent design specification and source of truth for Skittermouse.
 > It is loaded as repository context for GitHub Copilot. Implement it section by
-> section, following the build order in Section 17. Working title "QQMouse" — nothing
+> section, following the build order in Section 17. Working title "Skittermouse" — nothing
 > below depends on the name.
 
 ---
@@ -113,7 +113,7 @@ build" and "client build." Roles are dynamic:
 ### 2.2 Module layout
 
 ```
-QQMouse/
+Skittermouse/
 ├── CMakeLists.txt
 ├── README.md
 ├── src/
@@ -619,7 +619,7 @@ machine that's currently unreachable.
   with highest privileges" without a UAC prompt on every login.
 - Run elevated by default. **Reason to preserve in comments:** Windows UIPI (User
   Interface Privilege Isolation) blocks a non-elevated process from injecting input into
-  an elevated window. If QQMouse isn't elevated and the user later interacts with an
+  an elevated window. If Skittermouse isn't elevated and the user later interacts with an
   admin-elevated app on the target machine, injection into that specific window will
   silently fail — running elevated from the start avoids this whole failure class.
 - **macOS:** register via a `LaunchAgent` plist.
@@ -646,7 +646,7 @@ boundary the same way a physically-wired keyboard does is genuinely uncertain an
 version/build-dependent — build switch-then-type expecting it to work with no
 special-case code, but verify on an actual locked machine before relying on it. If the
 Secure Desktop boundary blocks it, the honest fallback is that unlock requires physical
-presence at that machine, and QQMouse simply resumes normal operation the moment it's
+presence at that machine, and Skittermouse simply resumes normal operation the moment it's
 back at an unlocked desktop session.
 
 ---
@@ -670,7 +670,7 @@ Implement all of these explicitly; none of them are optional polish:
 - **Discovery staleness:** entries drop from the "Connect to…" list after a last-seen
   timeout (Section 6) so offline machines don't linger.
 - **Protocol version mismatch:** the version byte (Section 5.3) is checked on every
-  connection; a mismatch is rejected cleanly with a clear "update QQMouse on <machine>"
+  connection; a mismatch is rejected cleanly with a clear "update Skittermouse on <machine>"
   message, never a silent misparse of the binary struct.
 - **Simultaneous switch claims:** resolved per the rule in Section 11.3, not left as
   undefined behavior.

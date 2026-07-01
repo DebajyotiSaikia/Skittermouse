@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace qq::core {
+namespace sm::core {
 
 bool ServerElection::contains(const std::vector<PeerId>& v, const PeerId& id) {
     return std::find(v.begin(), v.end(), id) != v.end();
@@ -69,4 +69,4 @@ bool ServerElection::isServer(const PeerId& id) const {
     return server.has_value() && *server == id;
 }
 
-} // namespace qq::core
+} // namespace sm::core

@@ -1,4 +1,4 @@
-/* QQMouse site — dependency-free, 3-state theme (system / light / dark).
+/* Skittermouse site — dependency-free, 3-state theme (system / light / dark).
    Dark values apply for (a) system dark when no explicit choice is stored, and
    (b) an explicit dark choice. An explicit light choice forces light even under a
    dark system setting. This uses only standard CSS custom properties and

@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-namespace qq::core {
+namespace sm::core {
 
 // Bump on any change to the wire layout below. Checked on every connection.
 inline constexpr uint8_t kProtocolVersion = 1;
@@ -60,4 +60,4 @@ struct VarHeader {
 static_assert(sizeof(InputEvent) == 12, "InputEvent wire layout changed unexpectedly");
 static_assert(sizeof(VarHeader) == 6, "VarHeader wire layout changed unexpectedly");
 
-} // namespace qq::core
+} // namespace sm::core

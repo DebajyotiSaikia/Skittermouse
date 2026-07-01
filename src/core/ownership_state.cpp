@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace qq::core {
+namespace sm::core {
 
 bool claimSupersedes(const OwnershipClaim& candidate, const OwnershipClaim& current) {
     if (candidate.sequence != current.sequence)
@@ -39,4 +39,4 @@ OwnershipState::ApplyResult OwnershipState::applyClaim(const OwnershipClaim& cla
     return ApplyResult::Superseded;
 }
 
-} // namespace qq::core
+} // namespace sm::core
