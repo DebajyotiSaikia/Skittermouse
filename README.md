@@ -11,9 +11,10 @@ video.
 Website: **[mouse.deb0.com](https://mouse.deb0.com)** — it auto-detects your OS and points
 to the right installer.
 
-- Windows: [Skittermouse-Windows-x64-Setup.exe](https://github.com/DebajyotiSaikia/Skittermouse/releases/latest/download/Skittermouse-Windows-x64-Setup.exe)
+- Windows installer: [Skittermouse-Windows-x64-Setup.exe](https://github.com/DebajyotiSaikia/Skittermouse/releases/latest/download/Skittermouse-Windows-x64-Setup.exe)
+- Windows portable (.zip): [Skittermouse-Windows-x64.zip](https://github.com/DebajyotiSaikia/Skittermouse/releases/latest/download/Skittermouse-Windows-x64.zip)
 - macOS: [Skittermouse-macOS.dmg](https://github.com/DebajyotiSaikia/Skittermouse/releases/latest/download/Skittermouse-macOS.dmg)
-- [All releases](https://github.com/DebajyotiSaikia/Skittermouse/releases/latest)
+- [All releases](https://github.com/DebajyotiSaikia/Skittermouse/releases)
 
 Installers are built automatically every night (when there are new commits) by
 [.github/workflows/nightly-release.yml](.github/workflows/nightly-release.yml) and are
