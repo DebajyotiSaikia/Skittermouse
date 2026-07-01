@@ -18,6 +18,8 @@ option(SM_BUILD_TESTS "Build Skittermouse unit tests" ON)
 add_library(skittermouse_core STATIC
     src/core/ownership_state.cpp
     src/core/server_election.cpp
+    src/core/config.cpp
+    src/core/key_translation.cpp
 )
 target_include_directories(skittermouse_core PUBLIC src)
 target_compile_features(skittermouse_core PUBLIC cxx_std_17)

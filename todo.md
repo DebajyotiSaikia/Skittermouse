@@ -11,6 +11,16 @@ is not yet built** — as each item lands, delete it from here.
 
 ---
 
+## VERY IMPORTANT — native C++ only
+
+Every item below must be built with **native, system-provided C++ APIs only** — Win32,
+WinSock2, CNG/BCrypt, Schannel, Core Graphics, AppKit, CommonCrypto, Security.framework,
+BSD sockets, and the C++ standard library. **No third-party dependencies** (no Boost, no
+OpenSSL, no Qt, no JSON/networking/crypto library). If any task seems to "need" a library,
+re-check against [spec.md](spec.md) §16 — the native path exists for all of it.
+
+---
+
 ## By build order (spec §17)
 
 ### Core gaps — pure logic, no OS calls
@@ -80,6 +90,20 @@ is not yet built** — as each item lands, delete it from here.
 - [ ] Over-the-wire race handling per §11.3; pair-individually join (no transitive trust).
 - [ ] `core/config` layout config — monitor-level spatial arrangement, forward-compat data only, **no** edge-crossing (§11.4).
 
+#### Coordinator failover — priority-ordered "server" fallback
+
+- [ ] User designates paired machines in a **priority order** (1, 2, 3, 4, 5, …). The current
+      coordinator ("server") is the highest-priority machine currently online; for machine 5
+      to act as server, all of 1–4 must be offline. Fails over down the list automatically,
+      and **fails back** preemptively when a higher-priority machine returns.
+- [ ] The coordinator has **no special permissions** — it is only a deterministic, mesh-wide
+      agreed reference computed identically on every machine from (priority list, online set).
+- [ ] **All paired machines are on the list by default**; the user may remove a machine so it
+      is never eligible. New pairings append at lowest priority.
+- [ ] Pure-logic election lives in `core/server_election` — wire it to the live online set
+      from the mesh, persist the priority list in `core/config`, and surface it as "primary"
+      (never "server") in the settings UI (§10 wording).
+
 ### Step 10 — File transfer (§9)
 
 - [ ] `net/session_token.h/.cpp` — short-lived token correlating the file channel to the authenticated input channel (§5.2).
@@ -107,6 +131,21 @@ is not yet built** — as each item lands, delete it from here.
 - [ ] Discovery staleness timeout (drop offline machines from "Connect to…").
 - [ ] Protocol-version mismatch rejected cleanly: "update Skittermouse on <machine>".
 - [ ] Simultaneous switch claims resolved per §11.3, not undefined.
+
+---
+
+## Tests — 100% coverage (all steps)
+
+- [ ] **Comprehensive unit tests covering 100% of the code** — every pure-logic module
+      (`core/*`, wire encode/decode, WS framing, crypto round-trips, verification code, WoL
+      packet, beacon packet, config, key_translation, session token, election) exercised on
+      every branch. Native test harness only (no gtest / third-party).
+- [ ] **Comprehensive e2e automation tests covering 100% of scenarios** — multi-node mesh
+      simulation: pairing → connect → switch (all triggers) → clipboard sync → file transfer
+      → coordinator failover/failback → owner-drop fail-safe → protocol-mismatch reject →
+      switch-to-unreachable → stuck-key release. Driven through the same interfaces the real
+      app uses, with OS calls behind mockable seams so it runs headless in CI.
+- [ ] Keep the Windows CI build green and all tests passing at every step.
 
 ---
 
