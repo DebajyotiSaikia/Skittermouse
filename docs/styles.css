@@ -406,6 +406,43 @@ section.block {
   justify-content: space-between;
 }
 
+/* Legal / prose pages (terms, privacy) */
+.legal {
+  width: min(760px, 92vw);
+  margin: 0 auto;
+  padding: 48px 0 24px;
+}
+.legal h1 {
+  font-size: clamp(28px, 4vw, 40px);
+  margin: 0 0 6px;
+  letter-spacing: -0.02em;
+}
+.legal .updated {
+  color: var(--muted);
+  margin: 0 0 28px;
+  font-size: 14px;
+}
+.legal h2 {
+  font-size: 20px;
+  margin: 30px 0 8px;
+}
+.legal p {
+  margin: 0 0 12px;
+}
+.legal ul {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+.legal li {
+  margin: 0 0 8px;
+}
+.legal a {
+  text-decoration: underline;
+}
+.legal .muted {
+  color: var(--muted);
+}
+
 @media (max-width: 560px) {
   .theme-toggle button span {
     display: none;

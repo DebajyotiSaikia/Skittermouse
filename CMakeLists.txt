@@ -77,6 +77,11 @@ set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
     "Software KVM: control multiple computers with one mouse and keyboard")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "QQMouse")
 
+# Terms the user must accept during installation, packaged into both installers:
+# NSIS shows a license page gated by an "I Agree" button; the macOS DMG shows a
+# software license agreement (SLA) that must be accepted before it will mount.
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/EULA.txt")
+
 if(WIN32)
     set(CPACK_GENERATOR "NSIS")
     set(CPACK_NSIS_DISPLAY_NAME "QQMouse")
@@ -84,6 +89,8 @@ if(WIN32)
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
 elseif(APPLE)
     set(CPACK_GENERATOR "DragNDrop")
+    set(CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE ON)
+    set(CPACK_DMG_SLA_LANGUAGES "English")
 endif()
 
 include(CPack)
