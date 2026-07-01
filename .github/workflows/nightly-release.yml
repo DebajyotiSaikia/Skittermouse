@@ -1,0 +1,144 @@
+name: Nightly Release
+
+# Builds Windows and macOS installers and publishes them to a rolling "nightly"
+# GitHub Release, so the site can always link to:
+#   .../releases/latest/download/QQMouse-Windows-x64-Setup.exe
+#   .../releases/latest/download/QQMouse-macOS.dmg
+#
+# Runs every day at 00:00 UTC, but only builds when something was committed in the
+# last 24 hours (per the request). Can also be run manually, which always builds.
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # 00:00 UTC daily
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check for changes today
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Decide whether to build
+        id: decide
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run — building."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          last=$(git log -1 --format=%ct)
+          now=$(date -u +%s)
+          age=$(( now - last ))
+          echo "Most recent commit was ${age}s ago."
+          if [ "$age" -le 86400 ]; then
+            echo "Change committed within the last day — building."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No commits in the last 24h — skipping."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nsis --no-progress -y
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQQ_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cpack --config build/CPackConfig.cmake -G NSIS -C Release -B build/_pkg
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = Get-ChildItem build/_pkg/*.exe | Select-Object -First 1
+          Copy-Item $exe.FullName dist/QQMouse-Windows-x64-Setup.exe
+
+      - name: Package installer (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cpack --config build/CPackConfig.cmake -G DragNDrop -C Release -B build/_pkg
+          mkdir -p dist
+          dmg=$(ls build/_pkg/*.dmg | head -n 1)
+          cp "$dmg" dist/QQMouse-macOS.dmg
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ runner.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish nightly release
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: installer-*
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: ls -R dist
+
+      - name: Publish rolling "nightly" release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          date=$(date -u +'%Y-%m-%d')
+          short="${GITHUB_SHA:0:7}"
+          notes=$(cat <<EOF
+          Automated nightly build from \`${short}\` on ${date} (UTC).
+
+          - Windows installer: \`QQMouse-Windows-x64-Setup.exe\`
+          - macOS disk image: \`QQMouse-macOS.dmg\`
+
+          These are early, **unsigned** development builds — Windows SmartScreen and
+          macOS Gatekeeper may warn on first launch.
+          EOF
+          )
+          # Roll the tag/release forward to the current commit so "latest" tracks it.
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly dist/* \
+            --title "QQMouse Nightly ${date}" \
+            --notes "${notes}" \
+            --latest \
+            --target "${GITHUB_SHA}"

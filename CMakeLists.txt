@@ -1,0 +1,89 @@
+cmake_minimum_required(VERSION 3.20)
+project(QQMouse VERSION 0.1.0 LANGUAGES CXX)
+
+# --- Global C++ settings -----------------------------------------------------
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
+endif()
+
+option(QQ_BUILD_TESTS "Build QQMouse unit tests" ON)
+
+# --- core: pure logic, NO platform / OS includes (spec Section 2.2, 16) ------
+# This library MUST compile and be unit-testable without any Win32 or Cocoa
+# headers. Anything OS-specific belongs in src/platform/, behind an interface.
+add_library(qqmouse_core STATIC
+    src/core/ownership_state.cpp
+    src/core/server_election.cpp
+)
+target_include_directories(qqmouse_core PUBLIC src)
+target_compile_features(qqmouse_core PUBLIC cxx_std_17)
+
+# --- platform layer: per-OS source gating from day one (spec Section 16) -----
+# .mm (Objective-C++) sources must NEVER reach the Windows toolchain, and Win32
+# .cpp sources must never reach the macOS toolchain. Populate these lists as the
+# platform/ files are added, following the build order in Section 17.
+set(QQ_PLATFORM_SOURCES)
+if(WIN32)
+    list(APPEND QQ_PLATFORM_SOURCES
+        # src/platform/capture_win.cpp      # Section 3.1
+        # src/platform/inject_win.cpp       # Section 3.2
+        # ... added as sections land
+    )
+elseif(APPLE)
+    enable_language(OBJCXX)
+    list(APPEND QQ_PLATFORM_SOURCES
+        # src/platform/capture_mac.mm       # Section 3.1
+        # src/platform/inject_mac.mm        # Section 3.2
+        # ... added as sections land
+    )
+endif()
+
+# --- app executable ----------------------------------------------------------
+add_executable(qqmouse
+    src/main.cpp
+    ${QQ_PLATFORM_SOURCES}
+)
+target_link_libraries(qqmouse PRIVATE qqmouse_core)
+
+if(WIN32)
+    # System libs are linked as the features that need them land (all native,
+    # zero third-party -- Section 16): ws2_32 (Section 5/6), bcrypt (Section 7),
+    # shell/comctl (Section 10), etc.
+elseif(APPLE)
+    # Frameworks linked as features land: CoreGraphics, AppKit, Security,
+    # CommonCrypto -- all OS-native (Section 16).
+endif()
+
+# --- tests -------------------------------------------------------------------
+if(QQ_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# --- packaging: native installers via CPack ----------------------------------
+# Windows -> NSIS (.exe installer); macOS -> DragNDrop (.dmg). Both are produced
+# by the nightly-release workflow (.github/workflows/nightly-release.yml) and
+# published to the rolling "nightly" GitHub Release the website links to.
+install(TARGETS qqmouse RUNTIME DESTINATION bin)
+
+set(CPACK_PACKAGE_NAME "QQMouse")
+set(CPACK_PACKAGE_VENDOR "QQMouse")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Software KVM: control multiple computers with one mouse and keyboard")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "QQMouse")
+
+if(WIN32)
+    set(CPACK_GENERATOR "NSIS")
+    set(CPACK_NSIS_DISPLAY_NAME "QQMouse")
+    set(CPACK_NSIS_PACKAGE_NAME "QQMouse")
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+elseif(APPLE)
+    set(CPACK_GENERATOR "DragNDrop")
+endif()
+
+include(CPack)
