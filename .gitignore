@@ -4,6 +4,9 @@
 /cmake-build-*/
 CMakeUserPresets.json
 
+# Wrangler / Cloudflare local cache (contains local account state)
+/.wrangler/
+
 # IDE / editor
 /.vs/
 *.user

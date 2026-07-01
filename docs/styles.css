@@ -209,6 +209,38 @@ code {
   color: transparent;
 }
 
+/* Hero mascot — hangs from a top pivot and swings side to side like a pendulum. */
+.hero-art {
+  display: flex;
+  justify-content: center;
+  margin: 0 auto 22px;
+  overflow: visible;
+}
+.hero-art img {
+  width: clamp(200px, 42vw, 340px);
+  height: auto;
+  transform-origin: top center;
+  animation: pendulum 3.4s ease-in-out infinite;
+  filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.18));
+  will-change: transform;
+}
+@keyframes pendulum {
+  0% {
+    transform: rotate(-13deg);
+  }
+  50% {
+    transform: rotate(13deg);
+  }
+  100% {
+    transform: rotate(-13deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-art img {
+    animation: none;
+  }
+}
+
 .cta {
   display: flex;
   flex-direction: column;

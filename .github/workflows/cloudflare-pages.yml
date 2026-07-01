@@ -1,0 +1,44 @@
+name: Deploy site (Cloudflare Pages)
+
+# Publishes the static site in docs/ to Cloudflare Pages (project "qqmouse" ->
+# https://qqmouse.pages.dev, custom domain mouse.deb0.com).
+#
+# One-time setup: add a repo secret CLOUDFLARE_API_TOKEN (a token with the
+# "Cloudflare Pages: Edit" permission). The account ID below is not secret.
+# Alternatively, connect the repo directly in the Cloudflare Pages dashboard and
+# delete this workflow.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/cloudflare-pages.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CF_ACCOUNT_ID: 7aec9e10283a52bc7a4f2ead1a524042
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish to Cloudflare Pages
+        if: env.CF_API_TOKEN != ''
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CF_ACCOUNT_ID }}
+          command: pages deploy docs --project-name=qqmouse --branch=main
+
+      - name: Remind to add token
+        if: env.CF_API_TOKEN == ''
+        run: echo "::notice::Add the CLOUDFLARE_API_TOKEN repo secret to enable automatic Cloudflare Pages deploys."
