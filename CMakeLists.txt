@@ -28,28 +28,46 @@ target_compile_features(skittermouse_core PUBLIC cxx_std_17)
 # .mm (Objective-C++) sources must NEVER reach the Windows toolchain, and Win32
 # .cpp sources must never reach the macOS toolchain. Populate these lists as the
 # platform/ files are added, following the build order in Section 17.
-set(SM_PLATFORM_SOURCES)
+#
+# Portable, platform-agnostic building blocks (standard C++ only) live here too,
+# e.g. HKDF layered on top of the platform HMAC (spec Section 7.1).
+set(SM_PLATFORM_SOURCES
+    src/crypto/hkdf.cpp
+)
 if(WIN32)
     list(APPEND SM_PLATFORM_SOURCES
-        # src/platform/capture_win.cpp      # Section 3.1
-        # src/platform/inject_win.cpp       # Section 3.2
+        src/platform/crypto_win.cpp       # Sections 5.4/7: AES-256-GCM, ECDH, HMAC via CNG/BCrypt
+        # src/platform/capture_win.cpp    # Section 3.1
         # ... added as sections land
     )
 elseif(APPLE)
     enable_language(OBJCXX)
     list(APPEND SM_PLATFORM_SOURCES
-        # src/platform/capture_mac.mm       # Section 3.1
-        # src/platform/inject_mac.mm        # Section 3.2
+        src/platform/crypto_mac.mm        # Sections 5.4/7: CommonCrypto + Security.framework
+        # src/platform/capture_mac.mm     # Section 3.1
         # ... added as sections land
     )
+endif()
+
+# All OS-specific code compiles into one library that BOTH the app and the tests
+# link, so headless CI tests can still exercise the crypto/net seams directly.
+add_library(skittermouse_platform STATIC ${SM_PLATFORM_SOURCES})
+target_include_directories(skittermouse_platform PUBLIC src)
+target_link_libraries(skittermouse_platform PUBLIC skittermouse_core)
+if(WIN32)
+    # All native, zero third-party (Section 16): bcrypt now (Sections 5.4/7); later
+    # ws2_32 (Sections 5/6), shell/comctl (Section 10), etc.
+    target_link_libraries(skittermouse_platform PUBLIC bcrypt)
+elseif(APPLE)
+    target_link_libraries(skittermouse_platform PUBLIC
+        "-framework Security" "-framework CoreFoundation")
 endif()
 
 # --- app executable ----------------------------------------------------------
 add_executable(skittermouse
     src/main.cpp
-    ${SM_PLATFORM_SOURCES}
 )
-target_link_libraries(skittermouse PRIVATE skittermouse_core)
+target_link_libraries(skittermouse PRIVATE skittermouse_platform)
 
 if(WIN32)
     # Embed our own application icon (shown in Explorer, the taskbar, and Alt-Tab,
@@ -57,13 +75,6 @@ if(WIN32)
     # packaging/skittermouse.ico referenced by packaging/skittermouse.rc.
     target_sources(skittermouse PRIVATE packaging/skittermouse.rc)
     target_include_directories(skittermouse PRIVATE packaging)
-
-    # System libs are linked as the features that need them land (all native,
-    # zero third-party -- Section 16): ws2_32 (Section 5/6), bcrypt (Section 7),
-    # shell/comctl (Section 10), etc.
-elseif(APPLE)
-    # Frameworks linked as features land: CoreGraphics, AppKit, Security,
-    # CommonCrypto -- all OS-native (Section 16).
 endif()
 
 # --- tests -------------------------------------------------------------------
