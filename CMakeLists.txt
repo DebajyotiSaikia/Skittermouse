@@ -102,7 +102,11 @@ if(WIN32)
     # Our own icon on the installer/uninstaller and the Add/Remove Programs entry.
     set(CPACK_NSIS_MUI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/packaging/skittermouse.ico")
     set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/packaging/skittermouse.ico")
-    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\skittermouse.exe")
+    # Quadruple backslash on purpose: CMake collapses it to two, CPack writes those
+    # two verbatim into CPackConfig.cmake, and cpack re-parses them to the single
+    # backslash NSIS needs ($INSTDIR\bin\skittermouse.exe). Two backslashes here
+    # would collapse to one and make CPackConfig.cmake fail with "invalid escape \s".
+    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\skittermouse.exe")
 elseif(APPLE)
     set(CPACK_GENERATOR "DragNDrop")
     set(CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE ON)
