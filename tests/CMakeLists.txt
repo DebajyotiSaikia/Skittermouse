@@ -8,6 +8,7 @@ add_executable(skittermouse_tests
     crypto_tests.cpp
     pairing_tests.cpp
     session_token_tests.cpp
+    net_tests.cpp
     e2e_mesh_tests.cpp
 )
 target_link_libraries(skittermouse_tests PRIVATE skittermouse_platform)

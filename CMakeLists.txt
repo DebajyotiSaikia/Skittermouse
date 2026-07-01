@@ -37,6 +37,9 @@ set(SM_PLATFORM_SOURCES
     src/pairing/ecdh_handshake.cpp
     src/pairing/key_store.cpp
     src/net/session_token.cpp
+    src/net/ws_frame.cpp
+    src/net/wol_sender.cpp
+    src/net/discovery_beacon.cpp
 )
 if(WIN32)
     list(APPEND SM_PLATFORM_SOURCES
@@ -61,7 +64,7 @@ target_link_libraries(skittermouse_platform PUBLIC skittermouse_core)
 if(WIN32)
     # All native, zero third-party (Section 16): bcrypt now (Sections 5.4/7); later
     # ws2_32 (Sections 5/6), shell/comctl (Section 10), etc.
-    target_link_libraries(skittermouse_platform PUBLIC bcrypt)
+    target_link_libraries(skittermouse_platform PUBLIC bcrypt ws2_32)
 elseif(APPLE)
     target_link_libraries(skittermouse_platform PUBLIC
         "-framework Security" "-framework CoreFoundation")

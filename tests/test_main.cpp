@@ -8,6 +8,7 @@ void run_key_translation_tests();
 void run_crypto_tests();
 void run_pairing_tests();
 void run_session_token_tests();
+void run_net_tests();
 void run_e2e_mesh_tests();
 
 int main() {
@@ -19,6 +20,7 @@ int main() {
     run_crypto_tests();
     run_pairing_tests();
     run_session_token_tests();
+    run_net_tests();
     run_e2e_mesh_tests();
 
     std::printf("\n%d checks, %d failure(s)\n", smtest::g_checks, smtest::g_failures);
