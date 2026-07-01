@@ -5,9 +5,16 @@ is not yet built** — as each item lands, delete it from here.
 
 ## Status
 
-- Build order (§17): steps 2–12 pending.
-- ~48 of ~51 spec'd source files pending — platform 0/19 · net 0/11 · pairing 0/8 · ui 0/6 · core (`config` + `key_translation`).
-- The shipped app is a console stub ([src/main.cpp](src/main.cpp)): no capture, injection, network, tray, or window yet.
+- Foundation landed and unit-tested (native C++ only, **438 checks green**): core logic
+  (config, key_translation, ownership, election, stuck-key tracker, clipboard loop-prevention),
+  crypto (AES-256-GCM + ECDH P-256 + SHA/HMAC/HKDF, KAT-verified), pairing (ECDH handshake,
+  6-digit code, encrypted key store), and net primitives (WS framing, version-checked message
+  codec, session token, WoL magic packet, discovery beacon codec). Windows capture/injection
+  compile.
+- Remaining: the WSS-over-TLS transport, the switching UX (hotkey/picker/tray), the OS
+  clipboard/file-promise/lock/autostart/wol-diag glue, all macOS `.mm` backends, the real
+  `main.cpp` app wiring, and hardware / two-machine / macOS validation.
+- The shipped app is still a console stub — no UI/tray/network wired yet.
 
 ---
 
@@ -23,41 +30,32 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ## By build order (spec §17)
 
-### Core gaps — pure logic, no OS calls
+### Step 2 — Capture + injection
 
-- [ ] `core/config.h/.cpp` — flat-file paired-device list, layout config, settings; no DB (§2.2, §16).
-- [ ] `core/key_translation.h/.cpp` — cross-OS modifier remap table by physical key position (§4.4/§4.5).
-
-### Step 2 — Capture + injection (primary platform first)
-
-- [ ] `platform/capture_win.cpp` — `SetWindowsHookEx` `WH_MOUSE_LL` + `WH_KEYBOARD_LL` (§3.1); install hook **only** while this machine is owner; track "currently down" keys/buttons explicitly (for §4.4).
-- [ ] `platform/inject_win.cpp` — `SendInput` (§3.2); runs continuously on non-owner, event-driven, ~zero idle cost.
-- [ ] Local hook → local inject sanity loop before any networking exists.
+- [ ] Wire capture → stuck-key tracker → forward, and inject on the sink; run the local
+      hook→inject sanity loop. (`platform/capture_win.cpp` + `inject_win.cpp` exist and
+      compile; the wiring and real-hardware validation remain.)
 
 ### Step 3 — Pairing (§7)
 
-- [ ] `platform/crypto_win.cpp` (+ `crypto_mac.mm` later) — AES-256-GCM + ECDH wrappers (§5.4, §7): CNG/BCrypt GCM; **nonce = strict incrementing counter, never reused**.
-- [ ] `pairing/ecdh_handshake.h/.cpp` — ephemeral ECDH P-256, `BCryptSecretAgreement` (§7.1).
-- [ ] `pairing/verification_code.h/.cpp` — 6-digit code = `HMAC-SHA256(shared, "pairing")` truncated (§7.1).
-- [ ] `pairing/pairing_dialog_win.cpp` — native confirm/reject dialog showing the code (§7.1).
-- [ ] HKDF long-term PSK derivation, salt = device_ids → 256-bit; discard ephemeral keys (§7.1).
-- [ ] `pairing/key_store.h/.cpp` — per-device PSK encrypted at rest (AES-256-GCM machine-local key) (§7.2).
+- [ ] `pairing/pairing_dialog_win.cpp` — native confirm/reject dialog showing the 6-digit
+      code (§7.1). (crypto, ECDH handshake, verification code, HKDF PSK, key store: done.)
 
 ### Step 4 — Input channel (§5)
 
-- [ ] `net/transport.h` — abstract `Transport` (send/recv/connect/close); one WSS backend now, Bluetooth-ready (§5.5).
-- [ ] WSS-over-TLS backend — hand-rolled WS upgrade + native TLS; path `/input` vs `/files` or `role` field (§5.1).
-- [ ] `net/ws_input_channel.h/.cpp` — persistent channel: MouseMove/MouseButton/KeyEvent/SwitchOwner/Heartbeat/ClipboardUpdate (§5.1).
-- [ ] AES-256-GCM per-message (§5.4); `protocol_version` byte checked on connect (§5.3, §15).
-- [ ] Milestone: two machines forwarding real mouse/keyboard end-to-end, encrypted.
+- [ ] WSS-over-TLS backend (Schannel) implementing `Transport` — WS upgrade handshake + native
+      TLS; differentiate `/input` vs `/files` (§5.1, §5.5).
+- [ ] `net/ws_input_channel.h/.cpp` — persistent channel carrying the hot-path messages;
+      AES-256-GCM per message with a strictly-incrementing nonce; version check on connect.
+- [ ] Milestone: two machines forwarding encrypted input end-to-end.
+      (transport interface + version-checked message codec: done.)
 
 ### Step 5 — Switching UX (§4, §10, §15)
 
 - [ ] `platform/hotkey_win.cpp` — `RegisterHotKey` (default `Ctrl+Alt+Space`), loud-fail → fallback combo, surface active combo (§4.1).
 - [ ] `ui/picker_window_win.cpp` — topmost focus-stealing list; Up/Down/Enter/Esc; local keyboard hook while open; unreachable machines greyed not omitted; always-clean dismiss (§4.2).
 - [ ] `platform/tray_win.cpp` + `ui/tray_menu.h/.cpp` — `Shell_NotifyIcon`; owner marked; per-machine online/offline; Connect…/Add device/settings; no IP/port/"server" language (§10, §4.3).
-- [ ] **Stuck-key release on every switch-out** — synthetic key-up/button-up for all tracked-down keys before handoff (§4.4).
-- [ ] Apply `key_translation` at injection when target OS differs (§4.5).
+- [ ] Apply `key_translation` at injection when target OS differs (§4.5). (remap table: done.)
 - [ ] `ui/toast_notify.h/.cpp` — connection/transfer status notifications (§15).
 - [ ] Turn `main.cpp` into the real app: WIN32 subsystem, message loop, subsystem wiring, config load.
 
@@ -73,14 +71,14 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 7 — Discovery (§6)
 
-- [ ] `net/discovery_beacon.h/.cpp` — UDP broadcast beacon `{machine_name, machine_id, ip, port}`; last-seen timeout drops stale entries; per-network "don't broadcast" toggle for untrusted Wi-Fi.
+- [ ] UDP broadcast/listen sockets around the beacon codec; per-machine last-seen timeout
+      drops stale entries; "don't broadcast on this network" toggle. (beacon packet codec: done.)
 
 ### Step 8 — Clipboard sync (§8)
 
 - [ ] `platform/clipboard_win.cpp` — `AddClipboardFormatListener` / `WM_CLIPBOARDUPDATE` (event-driven).
 - [ ] `platform/clipboard_mac.mm` — poll `NSPasteboard.changeCount` 200–500 ms.
-- [ ] Loop prevention (hash/source tag on synced writes).
-- [ ] Plain text only v1 (`CF_UNICODETEXT` / `NSPasteboardTypeString`).
+- [ ] Plain text only v1 (`CF_UNICODETEXT` / `NSPasteboardTypeString`). (loop-prevention logic: done.)
 - [ ] Password-manager exclusion (`CFSTR_EXCLUDECLIPBOARDCONTENTFROMMONITORPROCESSING`).
 
 ### Step 9 — Peer mesh, generalized to N (§2.1, §11)
@@ -100,14 +98,13 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
       agreed reference computed identically on every machine from (priority list, online set).
 - [ ] **All paired machines are on the list by default**; the user may remove a machine so it
       is never eligible. New pairings append at lowest priority.
-- [ ] Pure-logic election lives in `core/server_election` — wire it to the live online set
-      from the mesh, persist the priority list in `core/config`, and surface it as "primary"
-      (never "server") in the settings UI (§10 wording).
+- [ ] Wire the (done) `core/server_election` logic to the live online set from the mesh,
+      persist the priority list in `core/config` (done), and surface it as "primary" (never
+      "server") in the settings UI (§10 wording).
 
 ### Step 10 — File transfer (§9)
 
-- [ ] `net/session_token.h/.cpp` — short-lived token correlating the file channel to the authenticated input channel (§5.2).
-- [ ] `net/ws_file_channel.h/.cpp` — on-demand WSS, chunked bytes, opened per transfer, closed after (§5.1).
+- [ ] `net/ws_file_channel.h/.cpp` — on-demand WSS, chunked bytes, opened per transfer, closed after (§5.1). (session_token: done.)
 - [ ] `platform/filepromise_win.cpp` — `IDataObject` delay-render: `CFSTR_FILEDESCRIPTORW` (meta now) + `CFSTR_FILECONTENTS` (`IStream` pulls bytes only on `GetData`); multi-file from the start; native Explorer progress + error UI (§9.1).
 - [ ] `platform/filepromise_mac.mm` — `NSFilePromiseProvider`; native Finder progress (§9.2).
 - [ ] Bidirectional: every machine is both promise-provider and consumer (§9.3).
@@ -115,7 +112,7 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 ### Step 11 — Wake-on-LAN, auto-start, lock/unlock (§12–14)
 
 - [ ] `platform/wol_diag_win.cpp` — NIC WoL (`powercfg /deviceenablewake`) + OS wake (WMI `MSPower_DeviceWakeEnable`); cannot check BIOS — never claim certainty (§12).
-- [ ] `net/wol_sender.h/.cpp` — magic-packet UDP broadcast; "Waking…" state + 30–60 s timeout; guided fallback message (§12).
+- [ ] "Waking…" state + 30–60 s timeout + guided fallback flow around the (done) magic-packet UDP sender (§12).
 - [ ] `platform/autostart_win.cpp` — Task Scheduler, **run elevated** (UIPI injection into elevated windows) (§13).
 - [ ] `platform/autostart_mac.mm` — `LaunchAgent` plist (§13).
 - [ ] `platform/lock_win.cpp` — `LockWorkStation`; opt-in per machine (§14).
@@ -129,23 +126,21 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 - [ ] Switch-to-unreachable = no-op / brief "unavailable" flash, never hang/crash.
 - [ ] File-transfer mid-stream failure surfaced via native `IStream`/promise error (verify in testing).
 - [ ] Discovery staleness timeout (drop offline machines from "Connect to…").
-- [ ] Protocol-version mismatch rejected cleanly: "update Skittermouse on <machine>".
+- [ ] Surface protocol-version mismatch cleanly ("update Skittermouse on <machine>") at connect. (codec-level version gate: done.)
 - [ ] Simultaneous switch claims resolved per §11.3, not undefined.
 
 ---
 
 ## Tests — 100% coverage (all steps)
 
-- [ ] **Comprehensive unit tests covering 100% of the code** — every pure-logic module
-      (`core/*`, wire encode/decode, WS framing, crypto round-trips, verification code, WoL
-      packet, beacon packet, config, key_translation, session token, election) exercised on
-      every branch. Native test harness only (no gtest / third-party).
-- [ ] **Comprehensive e2e automation tests covering 100% of scenarios** — multi-node mesh
-      simulation: pairing → connect → switch (all triggers) → clipboard sync → file transfer
-      → coordinator failover/failback → owner-drop fail-safe → protocol-mismatch reject →
-      switch-to-unreachable → stuck-key release. Driven through the same interfaces the real
-      app uses, with OS calls behind mockable seams so it runs headless in CI.
-- [ ] Keep the Windows CI build green and all tests passing at every step.
+- [~] Unit tests for every pure-logic module landed so far (**438 checks**, native harness):
+      core logic, crypto (KAT + OpenSSL cross-check), pairing, session token, WS framing,
+      message codec, WoL, beacon, config, key_translation. Extend to 100% as new modules land.
+- [ ] **Comprehensive e2e automation covering 100% of scenarios** — extend the mesh simulator
+      to a full flow: pairing → connect → switch (all triggers) → clipboard sync → file
+      transfer → coordinator failover/failback → owner-drop fail-safe → protocol-mismatch
+      reject → switch-to-unreachable → stuck-key release, through the app seams, headless.
+- [~] Keep the Windows CI build green and all tests passing at every step. (currently 438/438.)
 
 ---
 

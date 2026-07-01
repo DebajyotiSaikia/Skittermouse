@@ -47,7 +47,8 @@ set(SM_PLATFORM_SOURCES
 if(WIN32)
     list(APPEND SM_PLATFORM_SOURCES
         src/platform/crypto_win.cpp       # Sections 5.4/7: AES-256-GCM, ECDH, HMAC via CNG/BCrypt
-        # src/platform/capture_win.cpp    # Section 3.1
+        src/platform/inject_win.cpp       # Section 3.2: SendInput
+        src/platform/capture_win.cpp      # Section 3.1: WH_MOUSE_LL + WH_KEYBOARD_LL
         # ... added as sections land
     )
 elseif(APPLE)
@@ -67,7 +68,7 @@ target_link_libraries(skittermouse_platform PUBLIC skittermouse_core)
 if(WIN32)
     # All native, zero third-party (Section 16): bcrypt now (Sections 5.4/7); later
     # ws2_32 (Sections 5/6), shell/comctl (Section 10), etc.
-    target_link_libraries(skittermouse_platform PUBLIC bcrypt ws2_32)
+    target_link_libraries(skittermouse_platform PUBLIC bcrypt ws2_32 user32)
 elseif(APPLE)
     target_link_libraries(skittermouse_platform PUBLIC
         "-framework Security" "-framework CoreFoundation")
