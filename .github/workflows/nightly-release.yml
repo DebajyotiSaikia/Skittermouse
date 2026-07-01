@@ -78,9 +78,12 @@ jobs:
         shell: pwsh
         run: |
           cpack --config build/CPackConfig.cmake -G NSIS -C Release -B build/_pkg
+          cpack --config build/CPackConfig.cmake -G ZIP -C Release -B build/_pkg
           New-Item -ItemType Directory -Force dist | Out-Null
           $exe = Get-ChildItem build/_pkg/*.exe | Select-Object -First 1
           Copy-Item $exe.FullName dist/Skittermouse-Windows-x64-Setup.exe
+          $zip = Get-ChildItem build/_pkg/*.zip | Select-Object -First 1
+          Copy-Item $zip.FullName dist/Skittermouse-Windows-x64.zip
 
       - name: Package installer (macOS)
         if: runner.os == 'macOS'
@@ -119,7 +122,7 @@ jobs:
       - name: List downloaded files
         run: ls -R dist
 
-      - name: Publish rolling "nightly" release
+      - name: Publish dated release (keeps history)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -129,15 +132,18 @@ jobs:
           Automated nightly build from \`${short}\` on ${date} (UTC).
 
           - Windows installer: \`Skittermouse-Windows-x64-Setup.exe\`
+          - Windows portable (no installer): \`Skittermouse-Windows-x64.zip\`
           - macOS disk image: \`Skittermouse-macOS.dmg\`
 
           These are early, **unsigned** development builds — Windows SmartScreen and
           macOS Gatekeeper may warn on first launch.
           EOF
           )
-          # Roll the tag/release forward to the current commit so "latest" tracks it.
-          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
-          gh release create nightly dist/* \
+          # Keep history: create a NEW dated release each run (never delete old ones),
+          # marked --latest so /releases/latest/download/<asset> always resolves to the
+          # newest build.
+          tag="nightly-$(date -u +'%Y%m%d-%H%M%S')"
+          gh release create "$tag" dist/* \
             --title "Skittermouse Nightly ${date}" \
             --notes "${notes}" \
             --latest \
