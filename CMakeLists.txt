@@ -50,6 +50,10 @@ add_executable(qqmouse
 target_link_libraries(qqmouse PRIVATE qqmouse_core)
 
 if(WIN32)
+    # Embed the application icon so Explorer / taskbar / Add-Remove Programs show it.
+    target_sources(qqmouse PRIVATE packaging/qqmouse.rc)
+    target_include_directories(qqmouse PRIVATE packaging)
+
     # System libs are linked as the features that need them land (all native,
     # zero third-party -- Section 16): ws2_32 (Section 5/6), bcrypt (Section 7),
     # shell/comctl (Section 10), etc.
@@ -87,6 +91,9 @@ if(WIN32)
     set(CPACK_NSIS_DISPLAY_NAME "QQMouse")
     set(CPACK_NSIS_PACKAGE_NAME "QQMouse")
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    set(CPACK_NSIS_MUI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/packaging/qqmouse.ico")
+    set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/packaging/qqmouse.ico")
+    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\qqmouse.exe")
 elseif(APPLE)
     set(CPACK_GENERATOR "DragNDrop")
     set(CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE ON)

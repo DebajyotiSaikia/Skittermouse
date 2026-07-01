@@ -13,10 +13,19 @@
     />
 
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="QQMouse" />
+    <meta name="robots" content="index, follow" />
+    <meta
+      name="keywords"
+      content="software KVM, keyboard and mouse sharing, Windows, macOS, shared clipboard, file transfer, Synergy alternative, Deskflow alternative"
+    />
+    <link rel="canonical" href="https://mouse.deb0.com/" />
 
+    <!-- Open Graph -->
     <meta
       property="og:title"
       content="QQMouse — software KVM for Windows & macOS"
@@ -27,13 +36,62 @@
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://mouse.deb0.com/" />
-    <meta property="og:image" content="https://mouse.deb0.com/icon-512.png" />
+    <meta property="og:site_name" content="QQMouse" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:image" content="https://mouse.deb0.com/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="QQMouse — one keyboard and mouse for all your computers"
+    />
 
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="QQMouse — software KVM for Windows & macOS"
+    />
+    <meta
+      name="twitter:description"
+      content="Control multiple computers with one mouse and keyboard. Native, encrypted, zero third-party dependencies."
+    />
+    <meta name="twitter:image" content="https://mouse.deb0.com/og-image.png" />
+
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="icon" href="favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="manifest" href="site.webmanifest" />
     <link rel="stylesheet" href="styles.css" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://mouse.deb0.com/#website",
+            "url": "https://mouse.deb0.com/",
+            "name": "QQMouse",
+            "description": "A native software KVM for Windows and macOS."
+          },
+          {
+            "@type": "SoftwareApplication",
+            "name": "QQMouse",
+            "applicationCategory": "UtilitiesApplication",
+            "operatingSystem": "Windows, macOS",
+            "url": "https://mouse.deb0.com/",
+            "image": "https://mouse.deb0.com/og-image.png",
+            "description": "Control multiple computers with one mouse and keyboard, with a shared clipboard, secure pairing, and native file transfer.",
+            "downloadUrl": "https://github.com/DebajyotiSaikia/QQMouse/releases/latest",
+            "softwareVersion": "nightly",
+            "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+          }
+        ]
+      }
+    </script>
 
     <!-- Anti-FOUC: apply a stored explicit theme before first paint. -->
     <script>
@@ -137,10 +195,10 @@
         <div class="container">
           <div class="hero-art">
             <img
-              src="assets/hero.png"
-              alt="QQMouse mascot"
-              width="820"
-              height="628"
+              src="assets/hero.svg"
+              alt="QQMouse mascot: a mouse leaping through two flaming QQ hoops"
+              width="691"
+              height="470"
             />
           </div>
           <h1>
