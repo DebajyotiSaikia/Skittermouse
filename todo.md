@@ -46,17 +46,15 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
       priority / defense-in-depth: message payloads are already AES-256-GCM sealed end-to-end by
       the app-layer `EncryptedTransport` (Docker-proven), so TLS is not the security gate.
 
-### Step 9 — Peer mesh: remaining
+### Step 9 — Peer mesh: macOS connection thread
 
-- [ ] Wire the (done, Docker-proven) `app/ConnectionService` into the Windows tray on a
-      background I/O thread: the thread dials/accepts + runs the secure link (blocking socket
-      work, lock-free), and hands each sealed link to the UI thread (which owns the mesh) via a
-      queue, so all `MeshNode`/`ConnectionManager` access stays single-threaded. Needs a dial
-      `connect()` timeout and **two-Windows-machine runtime validation** before shipping (the
-      threading can't be proven from one machine). `ConnectionService` itself (factory-injected
-      dial/accept -> secure_link -> ConnectionManager) is built, unit-tested, and validated
-      end-to-end over real TCP by the two-container rig (tests/docker/), which drives it through
-      `tools/netcheck`. macOS needs the same thread over the (now-written) POSIX transport.
+- [ ] macOS tray: run the same background connect/accept -> secure-link -> mesh I/O thread over
+      the (written) POSIX transport, plus an "Add device" pairing flow. The **Windows tray is
+      done**: a background I/O thread dials paired peers (bounded connect timeout) + accepts
+      inbound on port 47800, runs the secure link off the UI thread, and hands sealed links to
+      the UI thread (mesh stays single-threaded); "Add device" runs the ECDH numeric-comparison
+      (`PairingExchange` + confirm dialog) on port 47801 and stores the PSK in an
+      encrypted-at-rest keystore. Runtime check is in Manual validation below.
 
 ### Step 10 — File transfer: OS delay-render (§9)
 
@@ -90,8 +88,32 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 
 ---
 
-## Do NOT build (spec §1 non-goals — listed so they aren't accidentally added)
+## Manual validation (needs real hardware — the code is built + CI-green, but these paths can't
+## be runtime-tested from the dev box; validate on your machines)
 
+### Two Windows machines — pair, connect, forward input (Step 9, built)
+1. Install the same nightly on both PCs; both show the tray icon.
+2. Same LAN; allow Skittermouse through the firewall (TCP 47800 mesh + 47801 pairing) when prompted.
+3. On PC-A: tray → **Add device**, enter PC-B's IP, OK. On PC-B: tray → **Add device**, leave the
+   IP blank (it waits), OK. (Either side may enter the other's IP; the other leaves it blank.)
+4. Both show a **6-digit code** — confirm they MATCH and click Yes on both → toast "Paired with …".
+5. Within a few seconds → toast "Connected to <PC>"; the peer appears in the tray menu.
+6. Click the peer (or hotkey → pick it) to switch input, then type/move → it appears on the other
+   PC; switch back with the hotkey/menu. (This is exactly the flow the Docker rig proves headless.)
+- Not connecting? Check the firewall, the IP, and that both PCs run the same build.
+
+### Run-on-startup installer checkbox (Step 13)
+- Install with "Run Skittermouse on startup" ticked → after reboot the tray reappears.
+- Default (unticked) → no autostart; enable later via tray "Run on startup" or Settings.
+
+### Lock-screen unlock (Step 14, open question)
+- Switch to a LOCKED PC and type its password through forwarded input. Verify whether SendInput
+  crosses the Secure Desktop (LogonUI) boundary on your Windows build; if not, unlock needs
+  physical presence (documented limitation, not a bug).
+
+---
+
+## Do NOT build (spec §1 non-goals — listed so they aren't accidentally added)
 - Linux support in the PRODUCT (the Linux build is a TEST RIG only, never shipped).
 - Edge-of-screen crossing as a primary/load-bearing switch trigger.
 - Remote desktop, screen streaming, video capture.
