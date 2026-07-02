@@ -13,4 +13,9 @@ namespace sm::net {
 // are already AES-256-GCM sealed end-to-end per spec 5.4.)
 Transport* createWsClientTransport();
 
+// Block up to timeoutMs for one incoming connection on `port`, complete the server
+// WebSocket handshake, and return the accepted transport (server role). Null on
+// timeout/error. Caller owns.
+Transport* wsAcceptOne(uint16_t port, int timeoutMs);
+
 } // namespace sm::net

@@ -8,16 +8,19 @@
 
 #include "platform/tray_app.h"
 
-#include "core/clipboard_sync.h"
+#include "app/mesh_node.h"
 #include "core/config.h"
+#include "core/event_types.h"
 #include "core/hotkey.h"
 #include "platform/clipboard.h"
+#include "platform/injector.h"
 #include "ui/menu_model.h"
 
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,9 +36,10 @@ constexpr int kHotkeyId = 1;
 
 struct AppState {
     sm::core::Config config;
-    sm::core::ClipboardSync clipboard;
+    std::unique_ptr<sm::app::MeshNode> mesh;
+    std::unique_ptr<sm::platform::Injector> injector;
     NOTIFYICONDATAW nid{};
-    std::string self = "this-machine";
+    std::string self;
 };
 
 AppState* g_app = nullptr;
@@ -64,8 +68,11 @@ void showMenu(HWND hwnd) {
     GetCursorPos(&pt);
     HMENU menu = CreatePopupMenu();
 
-    auto items = sm::ui::buildMachineMenu(g_app->config.devices, g_app->self,
-                                          g_app->self, /*online*/ {});
+    std::vector<sm::core::PeerId> online;
+    for (const auto& d : g_app->config.devices)
+        if (g_app->mesh && g_app->mesh->isPeerOnline(d.id)) online.push_back(d.id);
+    sm::core::PeerId owner = g_app->mesh ? g_app->mesh->owner() : g_app->self;
+    auto items = sm::ui::buildMachineMenu(g_app->config.devices, g_app->self, owner, online);
     if (items.empty()) {
         AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"No devices paired");
     } else {
@@ -96,8 +103,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             UINT id = LOWORD(w);
             if (id == kIdQuit) {
                 PostQuitMessage(0);
+            } else if (id >= kIdDeviceBase && g_app->mesh) {
+                std::size_t idx = id - kIdDeviceBase;
+                if (idx < g_app->config.devices.size())
+                    g_app->mesh->requestSwitchTo(g_app->config.devices[idx].id);
             }
-            // Settings and per-device switch are wired once the mesh/UI land.
             return 0;
         }
 
@@ -105,18 +115,25 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             // The picker window (spec 4.2) opens here once built.
             return 0;
 
+        case WM_TIMER: {
+            if (g_app->mesh) {
+                uint64_t now = GetTickCount64();
+                g_app->mesh->sendHeartbeats(now);
+                g_app->mesh->poll(now);
+            }
+            return 0;
+        }
+
         case WM_CLIPBOARDUPDATE: {
-            if (!clipboardExcludedFromMonitoring()) { // skip password-manager writes
+            if (!clipboardExcludedFromMonitoring() && g_app->mesh) { // skip password-manager writes
                 std::string text;
-                if (getClipboardText(text) &&
-                    g_app->clipboard.shouldBroadcastLocalChange(text)) {
-                    // Broadcast to paired peers once the mesh network is wired.
-                }
+                if (getClipboardText(text)) g_app->mesh->onLocalClipboardChange(text);
             }
             return 0;
         }
 
         case WM_DESTROY:
+            KillTimer(hwnd, 1);
             RemoveClipboardFormatListener(hwnd);
             UnregisterHotKey(hwnd, kHotkeyId);
             Shell_NotifyIconW(NIM_DELETE, &g_app->nid);
@@ -134,6 +151,26 @@ int runTrayApp() {
 
     std::string cfg = configPath();
     if (!cfg.empty()) app.config = sm::core::Config::loadFromFile(cfg);
+
+    // Derive a stable self id from the machine name and build the mesh brain.
+    char nameBuf[256];
+    DWORD nameLen = sizeof(nameBuf);
+    app.self = GetComputerNameA(nameBuf, &nameLen) ? std::string(nameBuf, nameLen)
+                                                   : std::string("this-machine");
+    app.injector.reset(sm::platform::createInjector());
+    app.mesh = std::make_unique<sm::app::MeshNode>(app.self);
+    app.mesh->setPriority(app.config.priority);
+    sm::platform::Injector* inj = app.injector.get();
+    app.mesh->onInject = [inj](const sm::core::InputEvent& e) {
+        using MT = sm::core::MessageType;
+        switch (static_cast<MT>(e.type)) {
+            case MT::MouseMove:   inj->mouseMove(e.dx, e.dy); break;
+            case MT::MouseButton: inj->mouseButton(e.code, e.down != 0); break;
+            case MT::KeyEvent:    inj->key(e.code, e.down != 0); break;
+            default: break;
+        }
+    };
+    app.mesh->onRemoteClipboard = [](const std::string& t) { setClipboardText(t); };
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
     WNDCLASSW wc{};
@@ -164,6 +201,7 @@ int runTrayApp() {
     Shell_NotifyIconW(NIM_ADD, &app.nid);
 
     AddClipboardFormatListener(hwnd);
+    SetTimer(hwnd, 1, 50, nullptr); // pump the mesh: heartbeats + incoming messages
 
     // Global hotkey from config (spec 4.1). MOD_NOREPEAT avoids auto-repeat storms.
     auto hk = sm::core::parseHotkey(app.config.settings.hotkey);

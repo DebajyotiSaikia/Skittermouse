@@ -20,20 +20,25 @@ namespace sm::net {
 
 namespace {
 
-class WinWsClientTransport : public Transport {
-public:
-    ~WinWsClientTransport() override {
-        close();
-        if (wsaUp_) WSACleanup();
+// Start WinSock once for the process (OS ref-counts; cleaned up at process exit).
+struct WsaInit {
+    WsaInit() {
+        WSADATA w;
+        WSAStartup(MAKEWORD(2, 2), &w);
     }
+} g_wsaInit;
+
+// One WebSocket transport over a connected TCP socket. Per RFC 6455, client-role
+// frames are masked and server-role (accepted) frames are not.
+class WinWsTransport : public Transport {
+public:
+    explicit WinWsTransport(SOCKET sock = INVALID_SOCKET, bool client = true)
+        : sock_(sock), client_(client), connected_(sock != INVALID_SOCKET) {}
+
+    ~WinWsTransport() override { close(); }
 
     bool connect(const std::string& host, uint16_t port) override {
-        if (!wsaUp_) {
-            WSADATA w;
-            if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return false;
-            wsaUp_ = true;
-        }
-
+        if (connected_) return true;
         addrinfo hints{};
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
@@ -41,7 +46,6 @@ public:
         addrinfo* res = nullptr;
         std::string portStr = std::to_string(port);
         if (getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0) return false;
-
         sock_ = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
         if (sock_ == INVALID_SOCKET) { freeaddrinfo(res); return false; }
         if (::connect(sock_, res->ai_addr, static_cast<int>(res->ai_addrlen)) == SOCKET_ERROR) {
@@ -52,21 +56,18 @@ public:
         }
         freeaddrinfo(res);
 
-        // WebSocket opening handshake.
         std::string key = wsGenerateClientKey();
         std::string req = wsBuildClientHandshake(host + ":" + portStr, "/input", key);
         if (!sendAll(reinterpret_cast<const uint8_t*>(req.data()), req.size())) return false;
-
         std::string resp;
         char c;
         while (resp.find("\r\n\r\n") == std::string::npos) {
             int n = ::recv(sock_, &c, 1, 0);
             if (n <= 0) return false;
             resp += c;
-            if (resp.size() > 8192) return false; // runaway header
+            if (resp.size() > 8192) return false;
         }
         if (resp.find(wsAcceptKey(key)) == std::string::npos) return false;
-
         connected_ = true;
         return true;
     }
@@ -75,7 +76,7 @@ public:
 
     bool send(const uint8_t* data, std::size_t len) override {
         if (!connected_) return false;
-        Bytes frame = wsEncodeFrame(WsOpcode::Binary, data, len, /*masked*/ true);
+        Bytes frame = wsEncodeFrame(WsOpcode::Binary, data, len, /*masked*/ client_);
         return sendAll(frame.data(), frame.size());
     }
 
@@ -83,7 +84,6 @@ public:
         if (!connected_) return -1;
         WsFrame out;
         if (assembler_.next(out)) return copyFrame(out, buf, cap);
-
         char tmp[4096];
         int n = ::recv(sock_, tmp, sizeof(tmp), 0);
         if (n == 0) { connected_ = false; return -1; }
@@ -111,7 +111,6 @@ private:
         std::memcpy(buf, f.payload.data(), n);
         return static_cast<int>(n);
     }
-
     bool sendAll(const uint8_t* d, std::size_t len) {
         std::size_t sent = 0;
         while (sent < len) {
@@ -124,13 +123,76 @@ private:
     }
 
     SOCKET sock_ = INVALID_SOCKET;
+    bool client_ = true;
     bool connected_ = false;
-    bool wsaUp_ = false;
     WsFrameAssembler assembler_;
 };
 
+// Extract the Sec-WebSocket-Key value from a client handshake request.
+std::string parseKey(const std::string& req) {
+    const std::string tag = "Sec-WebSocket-Key:";
+    std::size_t p = req.find(tag);
+    if (p == std::string::npos) return {};
+    p += tag.size();
+    while (p < req.size() && (req[p] == ' ' || req[p] == '\t')) ++p;
+    std::size_t e = req.find("\r\n", p);
+    if (e == std::string::npos) return {};
+    return req.substr(p, e - p);
+}
+
 } // namespace
 
-Transport* createWsClientTransport() { return new WinWsClientTransport(); }
+Transport* createWsClientTransport() { return new WinWsTransport(INVALID_SOCKET, true); }
+
+Transport* wsAcceptOne(uint16_t port, int timeoutMs) {
+    SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listenSock == INVALID_SOCKET) return nullptr;
+    int yes = 1;
+    setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes),
+               sizeof(yes));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(listenSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+        listen(listenSock, 1) != 0) {
+        closesocket(listenSock);
+        return nullptr;
+    }
+
+    fd_set rd;
+    FD_ZERO(&rd);
+    FD_SET(listenSock, &rd);
+    timeval tv;
+    tv.tv_sec = timeoutMs / 1000;
+    tv.tv_usec = (timeoutMs % 1000) * 1000;
+    if (select(0, &rd, nullptr, nullptr, &tv) <= 0) {
+        closesocket(listenSock);
+        return nullptr;
+    }
+
+    SOCKET client = accept(listenSock, nullptr, nullptr);
+    closesocket(listenSock);
+    if (client == INVALID_SOCKET) return nullptr;
+
+    std::string req;
+    char c;
+    while (req.find("\r\n\r\n") == std::string::npos) {
+        int n = ::recv(client, &c, 1, 0);
+        if (n <= 0) { closesocket(client); return nullptr; }
+        req += c;
+        if (req.size() > 8192) { closesocket(client); return nullptr; }
+    }
+    std::string key = parseKey(req);
+    if (key.empty()) { closesocket(client); return nullptr; }
+    std::string resp = wsBuildServerResponse(key);
+    int sent = 0;
+    while (sent < static_cast<int>(resp.size())) {
+        int n = ::send(client, resp.data() + sent, static_cast<int>(resp.size() - sent), 0);
+        if (n <= 0) { closesocket(client); return nullptr; }
+        sent += n;
+    }
+    return new WinWsTransport(client, /*client role*/ false);
+}
 
 } // namespace sm::net
