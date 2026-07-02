@@ -37,9 +37,7 @@ jobs:
           gcovr --root . --object-directory build \
             --filter 'src/' \
             --exclude 'src/platform/ws_transport_posix.cpp' \
-            --txt=coverage.txt --xml-pretty=coverage.xml --print-summary
-          echo '----'
-          cat coverage.txt
+            --print-summary 2>&1 | tee coverage.txt
 
       - name: Job summary
         if: always()
@@ -54,6 +52,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: |
-            coverage.txt
-            coverage.xml
+          path: coverage.txt
