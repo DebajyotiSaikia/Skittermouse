@@ -6,6 +6,8 @@
 
 #include "net/transport.h"
 
+#include <string>
+
 namespace sm::net {
 
 // A client WebSocket transport connecting to a peer's listening port. Caller owns.
@@ -15,7 +17,8 @@ Transport* createWsClientTransport();
 
 // Block up to timeoutMs for one incoming connection on `port`, complete the server
 // WebSocket handshake, and return the accepted transport (server role). Null on
-// timeout/error. Caller owns.
-Transport* wsAcceptOne(uint16_t port, int timeoutMs);
+// timeout/error. Caller owns. If outPeerIp is non-null it receives the remote IP
+// (so the file channel, spec 5.1/9, can dial the source back on paste).
+Transport* wsAcceptOne(uint16_t port, int timeoutMs, std::string* outPeerIp = nullptr);
 
 } // namespace sm::net

@@ -20,6 +20,9 @@
 #include "net/discovery_beacon.h"
 #include "net/discovery_socket.h"
 #include "net/discovery_table.h"
+#include "net/file_channel.h"
+#include "net/file_promise_announce.h"
+#include "net/file_session.h"
 #include "net/wol_sender.h"
 #include "net/ws_transport.h"
 #include "pairing/key_store.h"
@@ -27,6 +30,8 @@
 #include "pairing/pairing_exchange.h"
 #include "platform/autostart.h"
 #include "platform/clipboard.h"
+#include "platform/filepromise.h"
+#include "platform/filepromise_win.h"
 #include "platform/injector.h"
 #include "ui/menu_model.h"
 #include "ui/picker_window.h"
@@ -39,6 +44,7 @@
 #include <array>
 #include <atomic>
 #include <deque>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -61,6 +67,7 @@ constexpr int kHotkeyId = 1;
 constexpr uint16_t kMeshPort = 47800;      // input + clipboard channel
 constexpr uint16_t kPairPort = 47801;      // pairing exchange
 constexpr uint16_t kDiscoveryPort = 47802; // LAN presence beacon during pairing (spec 6)
+constexpr uint16_t kFilePort = 47803;      // on-demand file channel (spec 5.1/9)
 
 struct PendingLink {
     sm::app::SecureLink link;
@@ -98,6 +105,13 @@ struct AppState {
     std::mutex connMutex;                          // guards connectedIds
     std::set<sm::core::PeerId> connectedIds;       // UI writes, bg reads (dial dedup)
     std::map<sm::core::PeerId, uint64_t> lastDial; // bg-thread only
+    std::map<sm::core::PeerId, std::string> peerIp; // last-known IP per peer (for /files dial)
+
+    // File transfer (spec 9): the source remembers the paths it last copied so the
+    // on-demand /files server can stream them when the destination pastes.
+    std::vector<std::string> copiedPaths;
+    std::mutex fileMutex;
+    std::thread fileThread; // accepts + serves the /files channel
 };
 
 AppState* g_app = nullptr;
@@ -364,6 +378,10 @@ void netThreadProc() {
             if (raw && raw->connect(dd.host, dd.port)) {
                 sm::log::write("[net] dialed " + dd.id + " at " + dd.host + ":" +
                                std::to_string(dd.port) + " (wss up)");
+                {
+                    std::lock_guard<std::mutex> lk(g_app->connMutex);
+                    g_app->peerIp[dd.id] = dd.host; // remember for the /files dial (spec 9)
+                }
                 sm::pairing::KeyStore tmp;
                 tmp.setPsk(dd.id, dd.psk);
                 sm::app::SecureLink link =
@@ -378,7 +396,8 @@ void netThreadProc() {
         }
 
         // Accept one inbound; the caller's identity + PSK come from the secure link.
-        std::unique_ptr<sm::net::Transport> in(sm::net::wsAcceptOne(kMeshPort, 200));
+        std::string inboundIp;
+        std::unique_ptr<sm::net::Transport> in(sm::net::wsAcceptOne(kMeshPort, 200, &inboundIp));
         if (in) {
             sm::pairing::KeyStore keysCopy;
             {
@@ -395,6 +414,10 @@ void netThreadProc() {
                 if (st == sm::app::InboundHandshake::Status::Ok) {
                     sm::app::SecureLink link = hs.take();
                     sm::log::write("[net] inbound secure link established with " + link.peerId);
+                    if (!inboundIp.empty()) {
+                        std::lock_guard<std::mutex> lk(g_app->connMutex);
+                        g_app->peerIp[link.peerId] = inboundIp; // for the /files dial (spec 9)
+                    }
                     std::lock_guard<std::mutex> lk(g_app->linkMutex);
                     g_app->pendingLinks.push_back(PendingLink{std::move(link), false});
                     break;
@@ -521,6 +544,213 @@ void discoveryProc() {
         }
     }
 }
+
+// --- File transfer glue (spec 9) --------------------------------------------------
+// Read the file paths currently on the clipboard (CF_HDROP), i.e. what the user just
+// copied in Explorer. Empty if the clipboard holds no files.
+std::vector<std::wstring> clipboardFilePaths(HWND owner) {
+    std::vector<std::wstring> paths;
+    if (!IsClipboardFormatAvailable(CF_HDROP) || !OpenClipboard(owner)) return paths;
+    if (HANDLE h = GetClipboardData(CF_HDROP)) {
+        auto drop = static_cast<HDROP>(h);
+        UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        for (UINT i = 0; i < count; ++i) {
+            wchar_t buf[MAX_PATH];
+            if (DragQueryFileW(drop, i, buf, MAX_PATH)) paths.emplace_back(buf);
+        }
+    }
+    CloseClipboard();
+    return paths;
+}
+
+uint64_t fileSizeOf(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) return 0;
+    if (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return 0; // v1: files only
+    return (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+}
+
+std::string baseNameUtf8(const std::wstring& path) {
+    std::size_t slash = path.find_last_of(L"\\/");
+    std::wstring name = (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+    int n = WideCharToMultiByte(CP_UTF8, 0, name.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string out(n > 0 ? static_cast<std::size_t>(n - 1) : 0, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, name.c_str(), -1, out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+std::string wideToUtf8(const std::wstring& w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string out(n > 0 ? static_cast<std::size_t>(n - 1) : 0, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+bool isDirectory(const std::wstring& path) {
+    DWORD a = GetFileAttributesW(path.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool readWholeFile(const std::wstring& path, sm::net::Bytes& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    f.seekg(0, std::ios::end);
+    std::streamoff sz = f.tellg();
+    if (sz < 0) return false;
+    f.seekg(0, std::ios::beg);
+    out.resize(static_cast<std::size_t>(sz));
+    if (sz > 0) f.read(reinterpret_cast<char*>(out.data()), sz);
+    return static_cast<bool>(f) || f.eof();
+}
+
+// Secure an inbound socket by looking up the connector's PSK (mirrors the mesh
+// acceptor). Returns a sealed link or an empty one on failure.
+sm::app::SecureLink secureInboundLink(std::unique_ptr<sm::net::Transport> raw) {
+    sm::pairing::KeyStore keysCopy;
+    {
+        std::lock_guard<std::mutex> lk(g_app->stateMutex);
+        for (const auto& id : g_app->keys.devices())
+            if (const sm::pairing::Psk* p = g_app->keys.getPsk(id)) keysCopy.setPsk(id, *p);
+    }
+    sm::app::InboundHandshake hs(std::move(raw), keysCopy, g_app->self);
+    for (int i = 0; i < 400 && g_app->netRunning.load(); ++i) {
+        auto st = hs.poll();
+        if (st == sm::app::InboundHandshake::Status::Ok) return hs.take();
+        if (st != sm::app::InboundHandshake::Status::NeedMore) break;
+        Sleep(5);
+    }
+    return {};
+}
+
+// /files server (spec 5.1/9): accept a secure connection on kFilePort and stream the
+// files the user last copied. A fresh connection per transfer keeps large file bytes
+// entirely off the input channel, so a transfer never stalls mouse movement.
+void fileServeThreadProc() {
+    while (g_app->netRunning.load()) {
+        std::unique_ptr<sm::net::Transport> in(sm::net::wsAcceptOne(kFilePort, 300));
+        if (!in) continue;
+        sm::app::SecureLink link = secureInboundLink(std::move(in));
+        if (!link.transport) continue;
+
+        std::vector<std::string> paths;
+        {
+            std::lock_guard<std::mutex> lk(g_app->fileMutex);
+            paths = g_app->copiedPaths;
+        }
+        sm::net::FileSender snd;
+        for (const auto& p : paths) {
+            std::wstring wp = toWide(p);
+            sm::net::Bytes bytes;
+            if (readWholeFile(wp, bytes)) snd.addFile(baseNameUtf8(wp), std::move(bytes));
+        }
+        if (snd.fileCount() == 0) continue;
+        sm::log::write("[file] serving " + std::to_string(snd.fileCount()) + " file(s)");
+        sm::net::FileChannel::sendAll(*link.transport, snd, 64 * 1024);
+        // Linger briefly so the peer drains before the socket closes.
+        for (int i = 0; i < 40 && link.transport->isConnected(); ++i) {
+            uint8_t b[64];
+            if (link.transport->recv(b, sizeof(b)) < 0) break;
+            Sleep(25);
+        }
+    }
+}
+
+// Destination pull: a shared, lazily-connected session that dials the source's /files
+// port on first read and drives a FileReceiver. All promised streams of one paste
+// share it, so the bytes are pulled once and served to Explorer by (index, offset).
+struct FilePullSession {
+    std::mutex mtx;
+    std::string sourceIp;
+    sm::core::PeerId sourceId;
+    sm::pairing::Psk psk;
+    bool hasKey = false;
+    std::unique_ptr<sm::net::Transport> transport;
+    sm::net::FileReceiver receiver;
+    bool failed = false;
+    bool dialed = false;
+
+    // Open the secure /files link to the source (once).
+    bool ensureConnected() {
+        if (dialed) return transport != nullptr;
+        dialed = true;
+        if (sourceIp.empty() || !hasKey) { failed = true; return false; }
+        std::unique_ptr<sm::net::Transport> raw(sm::net::createWsClientTransport());
+        if (!raw || !raw->connect(sourceIp, kFilePort)) { failed = true; return false; }
+        sm::pairing::KeyStore tmp;
+        tmp.setPsk(sourceId, psk);
+        sm::app::SecureLink link =
+            sm::app::secureOutbound(std::move(raw), tmp, g_app->self, sourceId);
+        if (!link.transport) { failed = true; return false; }
+        transport = std::move(link.transport);
+        sm::log::write("[file] pulling from " + sourceId + " at " + sourceIp);
+        return true;
+    }
+
+    // Serve bytes of file `index` at `offset`. Blocks (draining the link) until the
+    // bytes arrive; returns bytes copied, 0 at EOF, -1 on failure/timeout.
+    int read(uint32_t index, uint64_t offset, uint8_t* buf, uint32_t cap) {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (failed) return -1;
+        if (!ensureConnected()) return -1;
+        const uint64_t deadline = GetTickCount64() + 30000; // 30 s no-progress budget
+        for (;;) {
+            const bool haveFile = receiver.fileCount() > index;
+            const std::size_t have = haveFile ? receiver.data(index).size() : 0;
+            if (offset < have) {
+                std::size_t avail = have - static_cast<std::size_t>(offset);
+                std::size_t n = avail < cap ? avail : cap;
+                std::memcpy(buf, receiver.data(index).data() + offset, n);
+                return static_cast<int>(n);
+            }
+            if (haveFile && receiver.complete(index) && offset >= have) return 0; // EOF
+            sm::net::FileChannel::receiveAvailable(*transport, receiver);
+            if (!transport->isConnected() && !(receiver.fileCount() > index &&
+                                               receiver.data(index).size() > offset)) {
+                failed = true;
+                return -1; // source closed before delivering the requested bytes
+            }
+            if (GetTickCount64() > deadline) { failed = true; return -1; }
+            Sleep(2);
+        }
+    }
+};
+
+// Called on the UI thread when a peer announces copied files: build a delay-render
+// promise whose bytes pull from that peer over the /files channel, and put it on the
+// local clipboard so a paste in Explorer materialises them with native progress UI.
+void onRemoteFilePromiseUi(const sm::core::PeerId& from,
+                           const std::vector<sm::net::FilePromiseItem>& files) {
+    if (files.empty()) return;
+    auto session = std::make_shared<FilePullSession>();
+    session->sourceId = from;
+    {
+        std::lock_guard<std::mutex> lk(g_app->connMutex);
+        auto it = g_app->peerIp.find(from);
+        if (it != g_app->peerIp.end()) session->sourceIp = it->second;
+    }
+    if (session->sourceIp.empty()) {
+        for (const auto& d : g_app->config.devices)
+            if (d.id == from) session->sourceIp = d.last_ip;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_app->stateMutex);
+        if (const sm::pairing::Psk* p = g_app->keys.getPsk(from)) {
+            session->psk = *p;
+            session->hasKey = true;
+        }
+    }
+
+    std::vector<sm::platform::PromisedFile> promised;
+    for (const auto& f : files) promised.push_back({f.name, f.size});
+
+    sm::platform::FileByteSource source = [session](uint32_t index, uint64_t offset, uint8_t* buf,
+                                                    uint32_t cap) -> int {
+        return session->read(index, offset, buf, cap);
+    };
+    if (sm::platform::putFilePromiseOnClipboard(promised, std::move(source)))
+        showToast(L"Skittermouse", L"Files from " + toWide(from) + L" ready to paste");
+}
+
 
 void showMenu(HWND hwnd) {
     POINT pt;
@@ -694,9 +924,30 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         }
 
         case WM_CLIPBOARDUPDATE: {
-            if (!clipboardExcludedFromMonitoring() && g_app->mesh) { // skip password-manager writes
-                std::string text;
-                if (getClipboardText(text)) g_app->mesh->onLocalClipboardChange(text);
+            if (g_app->mesh && !clipboardExcludedFromMonitoring()) { // skip password-mgr writes
+                // Files copied in Explorer (CF_HDROP) -> announce a promise to peers so
+                // the machine the user pastes on can pull them (spec 9). Otherwise fall
+                // back to plain-text clipboard sync (spec 8).
+                std::vector<std::wstring> paths = clipboardFilePaths(hwnd);
+                std::vector<sm::net::FilePromiseItem> items;
+                std::vector<std::string> utf8Paths;
+                for (const auto& p : paths) {
+                    if (isDirectory(p)) continue; // v1: files only
+                    items.push_back({baseNameUtf8(p), fileSizeOf(p)});
+                    utf8Paths.push_back(wideToUtf8(p));
+                }
+                if (!items.empty()) {
+                    {
+                        std::lock_guard<std::mutex> lk(g_app->fileMutex);
+                        g_app->copiedPaths = std::move(utf8Paths);
+                    }
+                    g_app->mesh->announceFilePromise(items);
+                    sm::log::write("[file] announced " + std::to_string(items.size()) +
+                                   " copied file(s)");
+                } else {
+                    std::string text;
+                    if (getClipboardText(text)) g_app->mesh->onLocalClipboardChange(text);
+                }
             }
             return 0;
         }
@@ -709,6 +960,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             if (g_app->pairThread.joinable()) g_app->pairThread.join();
             if (g_app->discoveryThread.joinable()) g_app->discoveryThread.join();
             if (g_app->pairAcceptThread.joinable()) g_app->pairAcceptThread.join();
+            if (g_app->fileThread.joinable()) g_app->fileThread.join();
             RemoveClipboardFormatListener(hwnd);
             UnregisterHotKey(hwnd, kHotkeyId);
             Shell_NotifyIconW(NIM_DELETE, &g_app->nid);
@@ -726,6 +978,7 @@ int runTrayApp() {
 
     sm::log::init(logPath()); // on-machine debug log: %APPDATA%\Skittermouse\log.txt
     sm::log::write("[app] Skittermouse starting");
+    OleInitialize(nullptr); // OLE clipboard for the delay-render file promise (spec 9.1)
 
     std::string cfg = configPath();
     if (!cfg.empty()) app.config = sm::core::Config::loadFromFile(cfg);
@@ -749,6 +1002,12 @@ int runTrayApp() {
         }
     };
     app.mesh->onRemoteClipboard = [](const std::string& t) { setClipboardText(t); };
+    // A peer announced copied files (spec 9): offer them on the local clipboard so a
+    // paste in Explorer pulls the bytes on demand with native progress UI.
+    app.mesh->onRemoteFilePromise = [](const sm::core::PeerId& from,
+                                       const std::vector<sm::net::FilePromiseItem>& files) {
+        onRemoteFilePromiseUi(from, files);
+    };
     app.mesh->onOwnerChanged = [](const sm::core::PeerId& newOwner) {
         showToast(L"Skittermouse", L"Input owner is now " + toWide(newOwner));
     };
@@ -851,6 +1110,7 @@ int runTrayApp() {
     // Start the background network I/O thread (dials paired peers + accepts inbound).
     app.netRunning.store(true);
     app.netThread = std::thread(netThreadProc);
+    app.fileThread = std::thread(fileServeThreadProc); // on-demand /files server (spec 9)
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

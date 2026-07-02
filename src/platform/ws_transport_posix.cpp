@@ -282,7 +282,7 @@ private:
 
 Transport* createWsClientTransport() { return new PosixWsTransport(-1, true); }
 
-Transport* wsAcceptOne(uint16_t port, int timeoutMs) {
+Transport* wsAcceptOne(uint16_t port, int timeoutMs, std::string* outPeerIp) {
     int listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listenSock < 0) return nullptr;
     int yes = 1;
@@ -311,6 +311,15 @@ Transport* wsAcceptOne(uint16_t port, int timeoutMs) {
     int client = accept(listenSock, nullptr, nullptr);
     ::close(listenSock);
     if (client < 0) return nullptr;
+
+    if (outPeerIp) {
+        sockaddr_in pa{};
+        socklen_t palen = sizeof(pa);
+        char ip[INET_ADDRSTRLEN] = "";
+        if (getpeername(client, reinterpret_cast<sockaddr*>(&pa), &palen) == 0 &&
+            inet_ntop(AF_INET, &pa.sin_addr, ip, sizeof(ip)))
+            *outPeerIp = ip;
+    }
 
     // TLS handshake (wss://) on the accepted, blocking socket, then the WS upgrade
     // over the TLS stream (both inside the transport's serverHandshake()).

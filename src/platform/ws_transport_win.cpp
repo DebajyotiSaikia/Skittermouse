@@ -495,7 +495,7 @@ private:
 
 Transport* createWsClientTransport() { return new WinWsTransport(INVALID_SOCKET, true); }
 
-Transport* wsAcceptOne(uint16_t port, int timeoutMs) {
+Transport* wsAcceptOne(uint16_t port, int timeoutMs, std::string* outPeerIp) {
     SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listenSock == INVALID_SOCKET) return nullptr;
     int yes = 1;
@@ -525,6 +525,15 @@ Transport* wsAcceptOne(uint16_t port, int timeoutMs) {
     SOCKET client = accept(listenSock, nullptr, nullptr);
     closesocket(listenSock);
     if (client == INVALID_SOCKET) return nullptr;
+
+    if (outPeerIp) {
+        sockaddr_in pa{};
+        int palen = sizeof(pa);
+        char ip[INET_ADDRSTRLEN] = "";
+        if (getpeername(client, reinterpret_cast<sockaddr*>(&pa), &palen) == 0 &&
+            inet_ntop(AF_INET, &pa.sin_addr, ip, sizeof(ip)))
+            *outPeerIp = ip;
+    }
 
     // The accepted socket is blocking; acceptServerSide runs the TLS + WS handshakes
     // to completion, then flips it non-blocking for the mesh poll loop.
