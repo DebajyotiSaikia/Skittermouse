@@ -5,14 +5,27 @@ services:
   pnodeb:
     image: skittermouse-netcheck
     entrypoint: ["/src/build/netpair"]
-    command: ["--self","B","--peer","A","--listen","9000","--seconds","40"]
+    command:
+      ["--self", "B", "--peer", "A", "--listen", "9000", "--seconds", "40"]
     networks: [smnet]
 
   pnodea:
     image: skittermouse-netcheck
     depends_on: [pnodeb]
     entrypoint: ["/src/build/netpair"]
-    command: ["--self","A","--peer","B","--listen","9001","--connect","pnodeb:9000","--seconds","40"]
+    command:
+      [
+        "--self",
+        "A",
+        "--peer",
+        "B",
+        "--listen",
+        "9001",
+        "--connect",
+        "pnodeb:9000",
+        "--seconds",
+        "40",
+      ]
     networks: [smnet]
 
 networks:
