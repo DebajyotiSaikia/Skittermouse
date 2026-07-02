@@ -147,4 +147,24 @@ void run_net_tests() {
         sender.join();
         if (received) SM_CHECK_EQ(got.machine_id, std::string("cov-id"));
     }
+
+    // --- Discovery replies are LAN-only (no reflection to routed/public IPs) --
+    {
+        SM_CHECK(isPrivateIpv4("10.0.0.5"));
+        SM_CHECK(isPrivateIpv4("192.168.1.20"));
+        SM_CHECK(isPrivateIpv4("172.16.0.1"));
+        SM_CHECK(isPrivateIpv4("172.31.255.254"));
+        SM_CHECK(isPrivateIpv4("169.254.1.1"));
+        SM_CHECK(isPrivateIpv4("127.0.0.1"));
+        SM_CHECK(!isPrivateIpv4("8.8.8.8"));
+        SM_CHECK(!isPrivateIpv4("172.32.0.1")); // just outside 172.16/12
+        SM_CHECK(!isPrivateIpv4("1.2.3.4"));
+        SM_CHECK(!isPrivateIpv4("notanip"));
+
+        // sendBeaconTo refuses a routed/public target -> can't be a reflector.
+        Beacon bb;
+        bb.machine_id = "x";
+        bb.machine_name = "x";
+        SM_CHECK(!sendBeaconTo(bb, "8.8.8.8", 47899));
+    }
 }
