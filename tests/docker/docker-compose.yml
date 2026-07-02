@@ -1,0 +1,51 @@
+# Two isolated "machines" on one Docker network. nodeb listens; nodea dials it,
+# takes input ownership, and forwards keystrokes; nodeb injects them and exits PASS.
+# The shared PSK stands in for what device pairing (spec 7) would have derived.
+services:
+  nodeb:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    image: skittermouse-netcheck
+    command:
+      [
+        "--self",
+        "B",
+        "--peer",
+        "A",
+        "--listen",
+        "9000",
+        "--psk",
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "--role",
+        "listener",
+        "--seconds",
+        "45",
+      ]
+    networks: [smnet]
+
+  nodea:
+    image: skittermouse-netcheck
+    depends_on: [nodeb]
+    command:
+      [
+        "--self",
+        "A",
+        "--peer",
+        "B",
+        "--listen",
+        "9001",
+        "--connect",
+        "nodeb:9000",
+        "--psk",
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "--role",
+        "dialer",
+        "--seconds",
+        "45",
+      ]
+    networks: [smnet]
+
+networks:
+  smnet:
+    driver: bridge

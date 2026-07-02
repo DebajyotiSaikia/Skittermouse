@@ -91,6 +91,15 @@ elseif(APPLE)
         src/ui/picker_window_mac.mm       # Section 4.2: topmost NSPanel machine picker
         src/pairing/pairing_dialog_mac.mm # Section 7.1: NSAlert confirm dialog
     )
+else()
+    # Linux: TEST RIG ONLY (headless two-container network validation, tests/docker/).
+    # POSIX WS transport + OpenSSL-backed crypto. OpenSSL is NOT used by the shipped
+    # Windows/macOS product (which uses BCrypt / CommonCrypto per spec 16) -- see the
+    # header of src/platform/crypto_posix.cpp.
+    list(APPEND SM_PLATFORM_SOURCES
+        src/platform/crypto_posix.cpp
+        src/platform/ws_transport_posix.cpp
+    )
 endif()
 
 # All OS-specific code compiles into one library that BOTH the app and the tests
@@ -106,6 +115,10 @@ elseif(APPLE)
     target_link_libraries(skittermouse_platform PUBLIC
         "-framework Security" "-framework CoreFoundation" "-framework CoreGraphics"
         "-framework AppKit" "-framework Foundation" "-framework Carbon")
+else()
+    # Linux test rig only: OpenSSL supplies crypto where no native system API exists.
+    find_package(OpenSSL REQUIRED)
+    target_link_libraries(skittermouse_platform PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 # --- app executable ----------------------------------------------------------
@@ -115,6 +128,14 @@ add_executable(skittermouse WIN32
     src/main.cpp
 )
 target_link_libraries(skittermouse PRIVATE skittermouse_platform)
+
+# --- netcheck: headless two-container network-validation harness (Linux rig only) -
+# Runs the real secure_link -> ConnectionManager -> MeshNode path over a live TCP/WS
+# socket between two containers (tests/docker/). Not shipped.
+if(UNIX AND NOT APPLE)
+    add_executable(netcheck tools/netcheck.cpp)
+    target_link_libraries(netcheck PRIVATE skittermouse_platform)
+endif()
 
 if(WIN32)
     # Embed our own application icon (shown in Explorer, the taskbar, and Alt-Tab,

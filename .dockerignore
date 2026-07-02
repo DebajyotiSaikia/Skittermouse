@@ -1,0 +1,12 @@
+# Keep the Docker build context small and deterministic for the netcheck rig.
+
+build/
+.git/
+docs/
+qqgen/
+node_modules/
+.wrangler/
+_.log
+_.zip
+_.exe
+_.dmg
