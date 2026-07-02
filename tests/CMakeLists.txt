@@ -16,6 +16,7 @@ add_executable(skittermouse_tests
     connection_manager_tests.cpp
     feature_tests.cpp
     file_session_tests.cpp
+    file_channel_tests.cpp
     e2e_mesh_tests.cpp
     e2e_flow_tests.cpp
     e2e_meshnode_tests.cpp

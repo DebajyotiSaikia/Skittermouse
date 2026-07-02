@@ -55,8 +55,11 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
       `CFSTR_FILECONTENTS` (`IStream::Read` pulls bytes on paste) over the (done) file session;
       multi-file; native Explorer progress + error UI (§9.1).
 - [ ] `platform/filepromise_mac.mm` — `NSFilePromiseProvider`; native Finder progress (§9.2).
-- [ ] `net/ws_file_channel` — open the on-demand file transport per transfer, driving the
-      (done) `net/file_session` sender/receiver. Bidirectional (§9.3).
+- [ ] `net/ws_file_channel` glue — open the on-demand file transport per transfer (WS
+      client to `/files` + session token) and hand it to the (done, tested)
+      `net/FileChannel` driver, which streams FilePromiseMeta + FileChunks and reassembles
+      by offset over any Transport (multi-file + zero-byte + partial-delivery e2e-tested).
+      Bidirectional (§9.3).
 
 ### Step 11 — WoL / lock-unlock finish (§12, §14)
 
@@ -78,14 +81,14 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ## Tests — 100% coverage (all steps)
 
-- [~] **619 checks**, native harness: all core logic, crypto (KAT + OpenSSL cross-check),
+- [~] **735 checks**, native harness: all core logic, crypto (KAT + OpenSSL cross-check),
   pairing, session token, WS handshake/framing/assembler, message + ownership + file codecs,
   file session, WoL, beacon, discovery table, heartbeat, input pipeline, hotkey, menu model,
   config, key_translation. Extend as new pure logic lands.
 - [~] Headless e2e through the real Transport (loopback): a 2-node full flow AND a 3-node mesh
   (switch broadcast, coordinator failover/failback, input forward, clipboard loop-prevent,
   owner-drop fail-safe, version reject). Extend with file transfer + TLS as those land.
-- [~] Windows + macOS CI green at every step (619/619).
+- [~] Windows + macOS CI green at every step (735/735).
 
 ---
 
