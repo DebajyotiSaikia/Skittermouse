@@ -89,6 +89,7 @@ elseif(APPLE)
     list(APPEND SM_PLATFORM_SOURCES
         src/platform/inject_mac.mm        # Section 3.2: CGEventPost
         src/platform/capture_mac.mm       # Section 3.1: CGEventTapCreate
+        src/platform/ws_transport_mac.mm  # Section 5.1: TCP + SecureTransport wss transport
         src/platform/lock_mac.mm          # Section 14: CGSession suspend
         src/platform/clipboard_mac.mm     # Section 8: NSPasteboard
         src/platform/autostart_mac.mm     # Section 13: LaunchAgent plist
