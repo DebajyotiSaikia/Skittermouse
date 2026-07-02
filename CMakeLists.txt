@@ -51,6 +51,7 @@ target_compile_features(skittermouse_core PUBLIC cxx_std_17)
 set(SM_PLATFORM_SOURCES
     src/crypto/hkdf.cpp
     src/crypto/base64.cpp
+    src/crypto/x509_selfsigned.cpp
     src/pairing/verification_code.cpp
     src/pairing/ecdh_handshake.cpp
     src/pairing/pairing_exchange.cpp
