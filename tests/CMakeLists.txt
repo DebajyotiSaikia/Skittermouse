@@ -8,6 +8,7 @@ add_executable(skittermouse_tests
     wake_flow_tests.cpp
     crypto_tests.cpp
     pairing_tests.cpp
+    pairing_exchange_tests.cpp
     session_token_tests.cpp
     net_tests.cpp
     transport_tests.cpp

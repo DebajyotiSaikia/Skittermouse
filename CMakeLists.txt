@@ -51,6 +51,7 @@ set(SM_PLATFORM_SOURCES
     src/crypto/base64.cpp
     src/pairing/verification_code.cpp
     src/pairing/ecdh_handshake.cpp
+    src/pairing/pairing_exchange.cpp
     src/pairing/key_store.cpp
     src/app/secure_link.cpp
     src/app/connection_service.cpp

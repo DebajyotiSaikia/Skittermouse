@@ -8,6 +8,7 @@ void run_key_translation_tests();
 void run_wake_flow_tests();
 void run_crypto_tests();
 void run_pairing_tests();
+void run_pairing_exchange_tests();
 void run_session_token_tests();
 void run_net_tests();
 void run_transport_tests();
@@ -35,6 +36,7 @@ int main() {
     run_wake_flow_tests();
     run_crypto_tests();
     run_pairing_tests();
+    run_pairing_exchange_tests();
     run_session_token_tests();
     run_net_tests();
     run_transport_tests();
