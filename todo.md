@@ -52,45 +52,33 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 
 ## Remaining — cross-platform / Windows
 
-The four items below are addressed in code + CI-green; what's left is your on-hardware confirmation.
+### Run-after-install — diagnose from the log first, then fix
 
-### Run-after-install — FIXED (verify on a clean PC)
+- The release-publish step was broken (403) so earlier fixes weren't reaching your PC — that's fixed
+  now, so grab the **newest** nightly. Real fixes shipping: the installer **kills any running
+  instance during install** (before the finish-page "Run" launches the new one) so a stale/zombie
+  copy from a prior build can't block it, plus a cross-integrity single-instance mutex.
+- **Diagnose before guessing** — the log is the source of truth. After clicking Finish, open
+  `%APPDATA%\Skittermouse\log.txt`:
+  - `[app] runTrayApp entry` **present** → the exe started; the problem is downstream (tray/hotkey) —
+    send me the lines that follow.
+  - `[app] another instance already running` → a copy is already in the tray (not a bug).
+  - **No log at all** → the process never started. Run the exe directly from the portable
+    `Skittermouse-Windows-x64.zip`; Windows shows the real reason (a missing DLL, SmartScreen, or AV
+    quarantine of an unsigned exe). Only THEN pick a targeted fix (e.g. bundle just the VC++ redist,
+    or code-sign — NOT static-linking the whole CRT, which needlessly bloats the exe).
 
-- Root cause was almost certainly the **missing Visual C++ redistributable** on a fresh PC: the exe
-  was built with the dynamic runtime (`/MD`) so it needed `VCRUNTIME140.dll` / `MSVCP140.dll`. It is
-  now built with the **static runtime (`/MT`)** — `dumpbin /dependents` confirms the exe imports
-  ONLY system DLLs, so it launches on a clean Windows machine with nothing preinstalled. Startup is
-  logged before any early-return (`[app] runTrayApp entry`, or `another instance already running`),
-  so a "nothing happened after Finish" is now diagnosable from `%APPDATA%\Skittermouse\log.txt`. A
-  single-instance guard + kill-the-running-instance-before-reinstall keep a zombie from blocking it.
+### One-way LAN discovery — unicast reply (verify corp ↔ home)
 
-### One-way LAN discovery (VPN) — FIXED (verify corp ↔ home)
-
-- The beacon now opens a socket **bound to each interface's own IP** and sends to that NIC's subnet
-  broadcast + the limited broadcast, forcing it out every adapter — a VPN owning the default route
-  can no longer swallow it. The installer also adds **outbound** firewall rules (UDP 47802 / TCP
-  47800-47803) alongside the inbound ones. If a corp/endpoint firewall still blocks the app's
-  outbound UDP by policy, that's the remaining variable (allow Skittermouse manually there).
-
-### Full-repo audit — DONE
-
-- Line-by-line audit of the resource-management / security-sensitive code. Fixed: a message-decoder
-  **length guard** (reject an implausible/hostile `payload_length` before the `size_t` add or a huge
-  allocation), **PSK zeroization** (`crypto::secureZero` wipes decrypted key material on every exit
-  of the key store), and macOS transport **keychain + SSL cleanup** on every failure/early-return
-  path. Reviewed-and-already-safe items (the discovery-socket close, the HGLOBAL null-check, the ECC
-  blob init) were confirmed clean. A regression test locks in the decoder guard.
-
-### Test coverage — tooling + CI + 97.7% of the portable code
-
-- `SM_COVERAGE` CMake option + a **Coverage CI job** (`.github/workflows/coverage.yml`, ubuntu +
-  gcovr) measure the portable, headless-testable code: now **97.7% lines / 99.6% functions** (added
-  tests for the file logger, the discovery/WoL UDP sockets, and the pairing error paths). Literal
-  100% line coverage isn't reachable here: the remaining ~40 lines are crypto (OpenSSL) and socket
-  **error branches** needing artificial failure injection, plus unreachable defensive guards; and
-  the OS glue (Win32 COM / Schannel / Cocoa / SecureTransport) isn't compiled on the Linux coverage
-  host — it's validated by the Windows/macOS CI build, the Docker network rig, and on hardware. The
-  CI job publishes the figure on every push so regressions are caught.
+- Root fix: because your corp PC already RECEIVES your desktop's broadcast (that's why it sees the
+  desktop), each machine now **unicasts its beacon straight back to any beacon it receives**. So the
+  moment ONE direction's broadcast gets through, BOTH machines see each other — bypassing whatever
+  drops the corp PC's outbound broadcast (VPN split routing / corp firewall / WiFi client isolation).
+  This is on top of the per-interface broadcast + inbound/outbound firewall rules.
+- Workaround meanwhile: open **Add device** on both, then **initiate the pair from the corp PC**,
+  which already sees your desktop. If it still fails after the newest nightly, the corp endpoint
+  firewall is dropping the app's UDP entirely (allow Skittermouse there, or pair over the same LAN
+  without the VPN).
 
 ### Lock-screen unlock — runtime open question (§14)
 

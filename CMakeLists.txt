@@ -10,15 +10,6 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
 endif()
 
-# Static C/C++ runtime on MSVC (/MT, /MTd) so the shipped exe has NO Visual C++
-# redistributable dependency -- a fresh Windows machine can run it with nothing
-# preinstalled. Missing VCRUNTIME140.dll / MSVCP140.dll is a common "the app won't
-# launch after install" cause; static linking removes it entirely. Needs CMP0091.
-if(MSVC)
-    cmake_policy(SET CMP0091 NEW)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
-
 option(SM_BUILD_TESTS "Build Skittermouse unit tests" ON)
 
 # Coverage instrumentation for the headless test build (gcc/clang only -- used by the
