@@ -18,6 +18,7 @@ PairedDevice makeDevice(const std::string& id, const std::string& name) {
     d.port = 7777;
     d.os = "windows";
     d.wol_capable = true;
+    d.mac = "AA:BB:CC:DD:EE:FF";
     return d;
 }
 
@@ -63,6 +64,8 @@ void run_config_tests() {
         SM_CHECK_EQ(r.priority.size(), 3u);
         SM_CHECK_EQ(r.priority[0], std::string("id-1"));
         SM_CHECK_EQ(r.priority[2], std::string("id-3"));
+        // The Wake-on-LAN MAC survives the round-trip (spec 12).
+        SM_CHECK_EQ(r.devices[0].mac, std::string("AA:BB:CC:DD:EE:FF"));
     }
 
     // --- priority + ineligible round-trip, including empty -------------------

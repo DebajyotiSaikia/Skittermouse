@@ -24,6 +24,7 @@ struct PairedDevice {
     uint16_t    port = 0;
     std::string os;                 // "windows" | "macos"
     bool        wol_capable = false; // last self-diagnosed Wake-on-LAN status (Section 12)
+    std::string mac;                 // NIC MAC for the Wake-on-LAN magic packet (Section 12)
 
     bool operator==(const PairedDevice& o) const;
     bool operator!=(const PairedDevice& o) const { return !(*this == o); }

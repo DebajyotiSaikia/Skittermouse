@@ -5,6 +5,7 @@ void run_ownership_state_tests();
 void run_server_election_tests();
 void run_config_tests();
 void run_key_translation_tests();
+void run_wake_flow_tests();
 void run_crypto_tests();
 void run_pairing_tests();
 void run_session_token_tests();
@@ -28,6 +29,7 @@ int main() {
     run_server_election_tests();
     run_config_tests();
     run_key_translation_tests();
+    run_wake_flow_tests();
     run_crypto_tests();
     run_pairing_tests();
     run_session_token_tests();

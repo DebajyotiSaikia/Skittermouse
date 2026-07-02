@@ -63,10 +63,11 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 11 — WoL / lock-unlock finish (§12, §14)
 
-- [ ] "Waking…" state + 30–60 s timeout + guided fallback flow around the (done) magic-packet
-      sender + (done) `wol_diag`.
 - [ ] Unlock = switch-then-type only; **verify Secure Desktop / `LogonUI` behavior on a real
-      locked machine** (open question). (lock_win/lock_mac, autostart_win/mac: done.)
+      locked machine** (open question). (lock_win/lock_mac, autostart_win/mac: done. WoL
+      **"Waking…" flow** — bounded-timeout state machine (`core/WakeFlow`, unit-tested) + magic
+      packet + guided-fallback toast, wired into the tray on switch-to-unreachable with a
+      per-device MAC (config round-tripped): done.)
 
 ### Step 12 — Failure & edge-state UI (§15)
 

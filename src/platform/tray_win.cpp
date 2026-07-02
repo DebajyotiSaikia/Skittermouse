@@ -12,6 +12,8 @@
 #include "core/config.h"
 #include "core/event_types.h"
 #include "core/hotkey.h"
+#include "core/wake_flow.h"
+#include "net/wol_sender.h"
 #include "platform/clipboard.h"
 #include "platform/injector.h"
 #include "ui/menu_model.h"
@@ -39,6 +41,7 @@ struct AppState {
     sm::core::Config config;
     std::unique_ptr<sm::app::MeshNode> mesh;
     std::unique_ptr<sm::platform::Injector> injector;
+    sm::core::WakeFlow wake; // Wake-on-LAN "Waking…" flow (spec 12)
     NOTIFYICONDATAW nid{};
     std::string self;
 };
@@ -140,6 +143,24 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                 uint64_t now = GetTickCount64();
                 g_app->mesh->sendHeartbeats(now);
                 g_app->mesh->poll(now);
+
+                // Resolve any in-progress Wake-on-LAN attempt (spec 12).
+                if (g_app->wake.isWaking()) {
+                    const sm::core::PeerId target = g_app->wake.target();
+                    auto st = g_app->wake.update(now, g_app->mesh->isPeerOnline(target));
+                    if (st == sm::core::WakeFlow::Status::Connected) {
+                        showToast(L"Skittermouse", toWide(target) + L" is awake");
+                        g_app->mesh->requestSwitchTo(target); // now reachable -> switch
+                        g_app->wake.reset();
+                    } else if (st == sm::core::WakeFlow::Status::TimedOut) {
+                        showToast(L"Skittermouse",
+                                  L"Could not wake " + toWide(target) +
+                                      L". Check BIOS/UEFI Wake-on-LAN, the adapter's "
+                                      L"\u201cAllow this device to wake the computer\u201d "
+                                      L"setting, and disable Fast Startup.");
+                        g_app->wake.reset();
+                    }
+                }
             }
             return 0;
         }
@@ -202,9 +223,25 @@ int runTrayApp() {
     app.mesh->onPeerOnline = [](const sm::core::PeerId& id) {
         showToast(L"Skittermouse", L"Connected to " + toWide(id));
     };
-    // Switch-to-unreachable (spec 15): a brief "unavailable" flash, not a hang.
+    // Switch-to-unreachable (spec 15/12): if the target is WoL-plausible and has a
+    // known MAC, send the magic packet and enter the bounded "Waking…" flow;
+    // otherwise just flash "unavailable".
     app.mesh->onSwitchUnavailable = [](const sm::core::PeerId& id) {
-        showToast(L"Skittermouse", toWide(id) + L" is unavailable");
+        if (!g_app) return;
+        const sm::core::PairedDevice* dev = nullptr;
+        for (const auto& d : g_app->config.devices)
+            if (d.id == id) { dev = &d; break; }
+
+        sm::net::Mac mac;
+        if (dev && dev->wol_capable && !dev->mac.empty() &&
+            sm::net::parseMac(dev->mac, mac)) {
+            sm::net::sendMagicPacket(mac, "255.255.255.255", 9); // WoL discard port
+            g_app->wake.start(id, GetTickCount64(), 45000);      // 45 s window (spec 12)
+            const std::wstring name = toWide(dev->name.empty() ? id : dev->name);
+            showToast(L"Skittermouse", L"Waking " + name + L"\u2026");
+        } else {
+            showToast(L"Skittermouse", toWide(id) + L" is unavailable");
+        }
     };
     // Protocol-version mismatch (spec 15): tell the user which machine to update.
     app.mesh->onVersionMismatch = [](const sm::core::PeerId& id) {

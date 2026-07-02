@@ -119,7 +119,7 @@ std::vector<std::string> toStrIds(const std::vector<PeerId>& ids) {
 
 bool PairedDevice::operator==(const PairedDevice& o) const {
     return id == o.id && name == o.name && last_ip == o.last_ip &&
-           port == o.port && os == o.os && wol_capable == o.wol_capable;
+           port == o.port && os == o.os && wol_capable == o.wol_capable && mac == o.mac;
 }
 
 bool LayoutMonitor::operator==(const LayoutMonitor& o) const {
@@ -137,7 +137,7 @@ std::string Config::serialize() const {
     for (const auto& d : devices) {
         out << "device=" << joinFields({d.id, d.name, d.last_ip,
                                          std::to_string(d.port), d.os,
-                                         d.wol_capable ? "1" : "0"}) << "\n";
+                                         d.wol_capable ? "1" : "0", d.mac}) << "\n";
     }
     out << "priority=" << joinFields(toStrIds(priority)) << "\n";
     out << "ineligible=" << joinFields(toStrIds(ineligible)) << "\n";
@@ -173,6 +173,7 @@ Config Config::parse(const std::string& text) {
             if (f.size() > 3) d.port = toU16(f[3]);
             if (f.size() > 4) d.os = f[4];
             if (f.size() > 5) d.wol_capable = (f[5] == "1");
+            if (f.size() > 6) d.mac = f[6];
             c.devices.push_back(d);
         } else if (key == "priority") {
             auto f = splitFields(val);

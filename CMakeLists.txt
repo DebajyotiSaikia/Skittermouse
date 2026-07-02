@@ -25,6 +25,7 @@ add_library(skittermouse_core STATIC
     src/core/heartbeat.cpp
     src/core/input_pipeline.cpp
     src/core/hotkey.cpp
+    src/core/wake_flow.cpp
     src/ui/menu_model.cpp
     src/net/message_codec.cpp
     src/net/file_transfer.cpp
