@@ -14,9 +14,9 @@ is not yet built** — as each item lands, delete it from here.
   wired into the Windows tray (menu-switch, clipboard, injection, heartbeat pump). The WS
   transport has client + server/listener sides. All Windows + macOS platform backends compile
   on their CI runners.
-- Remaining: TLS-wrap the transport (Schannel), the picker window, the network connection-
-  management thread (connect/accept feeding MeshNode), OS file-promise (IStream /
-  NSFilePromiseProvider), macOS hotkey/picker, and hardware / two-machine / macOS validation.
+- Remaining: TLS-wrap the transport (Schannel), the network connection-management thread
+  (connect/accept feeding MeshNode), OS file-promise (IStream / NSFilePromiseProvider), the
+  macOS hotkey/picker, and hardware / two-machine / macOS validation.
 
 ---
 
@@ -41,13 +41,11 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
       WS handshake/framing/assembler, **client + server** transport, message codec, MeshNode
       routing wired into the tray, 3-node loopback e2e: done.)
 
-### Step 5 — Switching UX finish (§4, §10)
+### Step 5 — Switching UX finish (§4)
 
-- [ ] `ui/picker_window_win.cpp` — topmost focus-stealing list over the (done) `ui/menu_model`;
-      Up/Down/Enter/Esc; local keyboard hook while open; offline greyed; clean dismiss (§4.2).
-- [ ] `WM_HOTKEY` opens the picker; fallback-combo path if `RegisterHotKey` fails.
-- [ ] `ui/toast_notify` — connection/transfer status notifications (§15).
-      (hotkey parser, menu model, tray shell, hotkey registration, tray menu → switch: done.)
+- [ ] Fallback-combo path if `RegisterHotKey` fails (surface the active combo in the tray).
+      (hotkey parser, menu model, tray shell, hotkey registration, tray menu → switch,
+      hotkey-triggered picker window, owner-change toast: done.)
 
 ### Step 6 — macOS Cocoa UI parity (§4, §10)
 
