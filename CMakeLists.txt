@@ -26,6 +26,7 @@ add_library(skittermouse_core STATIC
     src/core/input_pipeline.cpp
     src/core/hotkey.cpp
     src/core/wake_flow.cpp
+    src/core/log.cpp
     src/ui/menu_model.cpp
     src/net/message_codec.cpp
     src/net/file_transfer.cpp
@@ -196,6 +197,10 @@ if(WIN32)
     # backslash NSIS needs ($INSTDIR\bin\skittermouse.exe). Two backslashes here
     # would collapse to one and make CPackConfig.cmake fail with "invalid escape \s".
     set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\skittermouse.exe")
+
+    # Finish page: a "Run Skittermouse" checkbox, CHECKED by default, launches the app
+    # right after install (relative to $INSTDIR; quad backslash -> one, per above).
+    set(CPACK_NSIS_MUI_FINISHPAGE_RUN "bin\\\\skittermouse.exe")
 
     # Optional "Run on startup" component -- UNCHECKED by default (spec 13: opt-in so a
     # reboot always recovers). When ticked it installs a marker file; the NSIS command

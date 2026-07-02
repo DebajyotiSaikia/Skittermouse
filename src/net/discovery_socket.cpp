@@ -98,7 +98,13 @@ bool receiveBeacon(uint16_t port, int timeout_ms, Beacon& out) {
                      reinterpret_cast<sockaddr*>(&from), &fromLen);
     closeSock(s);
     if (n <= 0) return false;
-    return decodeBeacon(buf, static_cast<std::size_t>(n), out);
+    if (!decodeBeacon(buf, static_cast<std::size_t>(n), out)) return false;
+    // The UDP source address is the address we can actually reach the peer at --
+    // more reliable than the sender's self-reported ip (multi-NIC, DHCP, etc.), so
+    // it wins. Presence only; pairing (spec 7) remains the security gate.
+    char ipstr[INET_ADDRSTRLEN] = "";
+    if (inet_ntop(AF_INET, &from.sin_addr, ipstr, sizeof(ipstr))) out.ip = ipstr;
+    return true;
 }
 
 } // namespace sm::net

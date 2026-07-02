@@ -14,8 +14,12 @@
 #include "core/config.h"
 #include "core/event_types.h"
 #include "core/hotkey.h"
+#include "core/log.h"
 #include "core/wake_flow.h"
 #include "crypto/crypto.h"
+#include "net/discovery_beacon.h"
+#include "net/discovery_socket.h"
+#include "net/discovery_table.h"
 #include "net/wol_sender.h"
 #include "net/ws_transport.h"
 #include "pairing/key_store.h"
@@ -54,8 +58,9 @@ constexpr UINT kIdStartup = 40003;
 constexpr UINT kIdAddDevice = 40004;
 constexpr UINT kIdDeviceBase = 41000;
 constexpr int kHotkeyId = 1;
-constexpr uint16_t kMeshPort = 47800; // input + clipboard channel
-constexpr uint16_t kPairPort = 47801; // pairing exchange
+constexpr uint16_t kMeshPort = 47800;      // input + clipboard channel
+constexpr uint16_t kPairPort = 47801;      // pairing exchange
+constexpr uint16_t kDiscoveryPort = 47802; // LAN presence beacon during pairing (spec 6)
 
 struct PendingLink {
     sm::app::SecureLink link;
@@ -79,8 +84,14 @@ struct AppState {
     std::array<uint8_t, 32> protKey{};
     std::thread netThread;
     std::thread pairThread;
+    std::thread discoveryThread;  // broadcast + listen for beacons during pairing
+    std::thread pairAcceptThread; // accept an inbound pairing while pairing mode is on
     std::atomic<bool> netRunning{false};
     std::atomic<bool> pairingActive{false};
+    std::atomic<bool> pairEngaged{false}; // one exchange per session (init XOR accept)
+    HWND discoveryDlg{nullptr};           // open discovery picker, so bg can dismiss it
+    sm::net::DiscoveryTable discovered;   // live beacons seen this session
+    std::mutex discMutex;                 // guards discovered
     std::mutex stateMutex;                         // guards config.devices + keys
     std::mutex linkMutex;                          // guards pendingLinks
     std::deque<PendingLink> pendingLinks;          // bg -> UI handoff
@@ -121,6 +132,18 @@ void showToast(const std::wstring& title, const std::wstring& message) {
     Shell_NotifyIconW(NIM_MODIFY, &n);
 }
 
+std::string logPath() {
+    wchar_t appdata[MAX_PATH];
+    if (!SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata))) return {};
+    std::wstring dir = std::wstring(appdata) + L"\\Skittermouse";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring lg = dir + L"\\log.txt";
+    int n = WideCharToMultiByte(CP_UTF8, 0, lg.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string out(n > 0 ? static_cast<std::size_t>(n - 1) : 0, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, lg.c_str(), -1, out.data(), n, nullptr, nullptr);
+    return out;
+}
+
 std::string keyStorePath() {
     wchar_t appdata[MAX_PATH];
     if (!SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata))) return {};
@@ -151,81 +174,137 @@ std::array<uint8_t, 32> machineProtectionKey() {
     return key;
 }
 
-// --- Minimal one-field input dialog (peer IP entry for pairing) -------------------
-struct PromptState {
-    HWND edit = nullptr;
-    std::wstring label;
-    std::wstring* out = nullptr;
+// --- Auto-discovery pairing picker (spec 6/7) -------------------------------------
+// A small live list of LAN devices found via the presence beacon: name + IP shown,
+// no manual IP typing. The list refreshes on a timer from the discovery table that
+// discoveryProc() fills. Picking a device initiates pairing to it.
+struct DiscoveryPickState {
+    HWND list = nullptr;
+    std::vector<sm::net::Beacon> items; // parallel to the listbox rows
+    std::string selectedIp;
+    std::string selectedName;
     bool ok = false;
     bool done = false;
 };
-PromptState* g_prompt = nullptr;
+DiscoveryPickState* g_disco = nullptr;
 
-LRESULT CALLBACK promptProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+void refreshDiscoveryList() {
+    if (!g_disco || !g_disco->list || !g_app) return;
+    std::vector<sm::net::Beacon> live;
+    {
+        std::lock_guard<std::mutex> lk(g_app->discMutex);
+        live = g_app->discovered.live(GetTickCount64(), 6000); // drop entries >6 s stale
+    }
+    // Hide devices we're already paired with (nothing to add there).
+    std::vector<sm::net::Beacon> shown;
+    for (auto& b : live) {
+        bool paired = false;
+        for (auto& d : g_app->config.devices)
+            if (d.id == b.machine_id) { paired = true; break; }
+        if (!paired) shown.push_back(b);
+    }
+    // Preserve the current selection across the refresh by machine_id.
+    LRESULT sel = SendMessageW(g_disco->list, LB_GETCURSEL, 0, 0);
+    std::string selId;
+    if (sel != LB_ERR && static_cast<std::size_t>(sel) < g_disco->items.size())
+        selId = g_disco->items[static_cast<std::size_t>(sel)].machine_id;
+
+    SendMessageW(g_disco->list, LB_RESETCONTENT, 0, 0);
+    g_disco->items = shown;
+    int newSel = -1;
+    for (std::size_t i = 0; i < shown.size(); ++i) {
+        std::wstring line = toWide(shown[i].machine_name + "   \u2014   " + shown[i].ip);
+        SendMessageW(g_disco->list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
+        if (shown[i].machine_id == selId) newSel = static_cast<int>(i);
+    }
+    if (newSel >= 0)
+        SendMessageW(g_disco->list, LB_SETCURSEL, newSel, 0);
+    else if (!shown.empty() && selId.empty())
+        SendMessageW(g_disco->list, LB_SETCURSEL, 0, 0);
+}
+
+LRESULT CALLBACK discoveryPickProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_CREATE: {
             HINSTANCE hi = GetModuleHandleW(nullptr);
             HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            HWND lab = CreateWindowExW(0, L"STATIC", g_prompt->label.c_str(), WS_CHILD | WS_VISIBLE,
-                                       14, 12, 344, 20, h, nullptr, hi, nullptr);
-            g_prompt->edit = CreateWindowExW(
-                0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 14,
-                38, 344, 24, h, reinterpret_cast<HMENU>(static_cast<INT_PTR>(100)), hi, nullptr);
-            HWND ok = CreateWindowExW(0, L"BUTTON", L"OK",
-                                      WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_TABSTOP, 194, 74,
-                                      78, 26, h, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
-            HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                          280, 74, 78, 26, h, reinterpret_cast<HMENU>(IDCANCEL), hi,
-                                          nullptr);
-            for (HWND c : {lab, g_prompt->edit, ok, cancel})
+            HWND lab = CreateWindowExW(
+                0, L"STATIC",
+                L"Devices found on your network. Open \u201cAdd device\u201d on the other PC too, "
+                L"then select it here:",
+                WS_CHILD | WS_VISIBLE, 14, 10, 396, 34, h, nullptr, hi, nullptr);
+            g_disco->list = CreateWindowExW(
+                WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY, 14, 48, 396, 150, h,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(200)), hi, nullptr);
+            HWND pair = CreateWindowExW(0, L"BUTTON", L"Pair",
+                                        WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_TABSTOP, 246,
+                                        208, 78, 28, h, reinterpret_cast<HMENU>(IDOK), hi, nullptr);
+            HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
+                                          WS_CHILD | WS_VISIBLE | WS_TABSTOP, 332, 208, 78, 28, h,
+                                          reinterpret_cast<HMENU>(IDCANCEL), hi, nullptr);
+            for (HWND c : {lab, g_disco->list, pair, cancel})
                 if (c) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-            SetFocus(g_prompt->edit);
+            SetTimer(h, 1, 600, nullptr); // live-refresh the discovered list
+            refreshDiscoveryList();
+            SetFocus(g_disco->list);
             return 0;
         }
+        case WM_TIMER:
+            refreshDiscoveryList();
+            return 0;
         case WM_COMMAND:
-            if (LOWORD(w) == IDOK) {
-                wchar_t b[256];
-                GetWindowTextW(g_prompt->edit, b, 256);
-                if (g_prompt->out) *g_prompt->out = b;
-                g_prompt->ok = true;
-                g_prompt->done = true;
-                DestroyWindow(h);
+            if (LOWORD(w) == IDOK || (LOWORD(w) == 200 && HIWORD(w) == LBN_DBLCLK)) {
+                LRESULT sel = SendMessageW(g_disco->list, LB_GETCURSEL, 0, 0);
+                if (sel != LB_ERR && static_cast<std::size_t>(sel) < g_disco->items.size()) {
+                    g_disco->selectedIp = g_disco->items[static_cast<std::size_t>(sel)].ip;
+                    g_disco->selectedName = g_disco->items[static_cast<std::size_t>(sel)].machine_name;
+                    g_disco->ok = true;
+                    g_disco->done = true;
+                    DestroyWindow(h);
+                }
             } else if (LOWORD(w) == IDCANCEL) {
-                g_prompt->done = true;
+                g_disco->done = true;
                 DestroyWindow(h);
             }
             return 0;
         case WM_CLOSE:
-            g_prompt->done = true;
+            g_disco->done = true;
             DestroyWindow(h);
+            return 0;
+        case WM_DESTROY:
+            KillTimer(h, 1);
             return 0;
         default:
             return DefWindowProcW(h, m, w, l);
     }
 }
 
-bool promptText(const wchar_t* title, const wchar_t* label, std::wstring& out) {
-    PromptState st;
-    st.label = label;
-    st.out = &out;
-    g_prompt = &st;
+// Show the discovery picker (modal). Returns true and fills ip/name if the user picks
+// a device. The window handle is published in g_app->discoveryDlg so a background
+// pairing accept can dismiss it. The local message loop still dispatches the tray's
+// WM_TIMER, so the mesh keeps pumping while the picker is open.
+bool showDiscoveryPicker(std::string& ipOut, std::string& nameOut) {
+    DiscoveryPickState st;
+    g_disco = &st;
     HINSTANCE hInst = GetModuleHandleW(nullptr);
     WNDCLASSW wc{};
-    wc.lpfnWndProc = promptProc;
+    wc.lpfnWndProc = discoveryPickProc;
     wc.hInstance = hInst;
-    wc.lpszClassName = L"SkittermousePrompt";
+    wc.lpszClassName = L"SkittermouseDiscovery";
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
     RegisterClassW(&wc);
     int sx = GetSystemMetrics(SM_CXSCREEN), sy = GetSystemMetrics(SM_CYSCREEN);
-    const int wdt = 376, hgt = 150;
-    HWND h = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, wc.lpszClassName, title,
+    const int wdt = 442, hgt = 292;
+    HWND h = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, wc.lpszClassName, L"Add device",
                              WS_POPUP | WS_CAPTION | WS_SYSMENU, (sx - wdt) / 2, (sy - hgt) / 2, wdt,
                              hgt, nullptr, nullptr, hInst, nullptr);
     if (!h) {
-        g_prompt = nullptr;
+        g_disco = nullptr;
         return false;
     }
+    if (g_app) g_app->discoveryDlg = h;
     ShowWindow(h, SW_SHOW);
     SetForegroundWindow(h);
     MSG msg;
@@ -234,7 +313,10 @@ bool promptText(const wchar_t* title, const wchar_t* label, std::wstring& out) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    g_prompt = nullptr;
+    if (g_app) g_app->discoveryDlg = nullptr;
+    g_disco = nullptr;
+    ipOut = st.selectedIp;
+    nameOut = st.selectedName;
     return st.ok;
 }
 
@@ -280,6 +362,8 @@ void netThreadProc() {
 
             std::unique_ptr<sm::net::Transport> raw(sm::net::createWsClientTransport());
             if (raw && raw->connect(dd.host, dd.port)) {
+                sm::log::write("[net] dialed " + dd.id + " at " + dd.host + ":" +
+                               std::to_string(dd.port) + " (wss up)");
                 sm::pairing::KeyStore tmp;
                 tmp.setPsk(dd.id, dd.psk);
                 sm::app::SecureLink link =
@@ -287,6 +371,8 @@ void netThreadProc() {
                 if (link.transport) {
                     std::lock_guard<std::mutex> lk(g_app->linkMutex);
                     g_app->pendingLinks.push_back(PendingLink{std::move(link), true});
+                } else {
+                    sm::log::write("[net] secure link to " + dd.id + " failed (PSK mismatch?)");
                 }
             }
         }
@@ -303,10 +389,12 @@ void netThreadProc() {
                 }
             }
             sm::app::InboundHandshake hs(std::move(in), keysCopy, g_app->self);
+            sm::log::write("[net] inbound wss accepted; running secure handshake");
             for (int i = 0; i < 200 && g_app->netRunning.load(); ++i) {
                 auto st = hs.poll();
                 if (st == sm::app::InboundHandshake::Status::Ok) {
                     sm::app::SecureLink link = hs.take();
+                    sm::log::write("[net] inbound secure link established with " + link.peerId);
                     std::lock_guard<std::mutex> lk(g_app->linkMutex);
                     g_app->pendingLinks.push_back(PendingLink{std::move(link), false});
                     break;
@@ -319,37 +407,19 @@ void netThreadProc() {
     }
 }
 
-// --- Pairing thread (spec 7.1) ----------------------------------------------------
-// If `host` is non-empty we initiate (connect to the peer's pairing port); otherwise
-// we wait for an inbound pairing connection. Runs the ECDH exchange, shows the 6-digit
-// code for the human to compare, and on confirm stores the PSK + device.
-void pairThreadProc(std::string host) {
-    while (!host.empty() && (host.back() == ' ' || host.back() == '\r' || host.back() == '\n'))
-        host.pop_back();
-    while (!host.empty() && host.front() == ' ') host.erase(host.begin());
-
-    std::unique_ptr<sm::net::Transport> t;
+// --- Pairing (spec 7.1) -----------------------------------------------------------
+// Shared exchange used by both the initiator and the acceptor: run the ECDH numeric-
+// comparison over an already-connected transport, show the 6-digit code for the human
+// to compare, and on confirm store the PSK + device. `initiatedHost` is the peer IP
+// when we dialed (so we can seed last_ip); empty when the peer dialed us.
+bool runPairingSession(sm::net::Transport& t, const std::string& initiatedHost) {
     const uint64_t deadline = GetTickCount64() + 30000;
-    while (!t && GetTickCount64() < deadline && g_app->pairingActive.load()) {
-        if (!host.empty()) {
-            std::unique_ptr<sm::net::Transport> raw(sm::net::createWsClientTransport());
-            if (raw && raw->connect(host, kPairPort)) t = std::move(raw);
-            else Sleep(300);
-        } else {
-            t.reset(sm::net::wsAcceptOne(kPairPort, 500));
-        }
-    }
-    if (!t) {
-        showToast(L"Skittermouse", L"Pairing timed out (no connection).");
-        g_app->pairingActive.store(false);
-        return;
-    }
+    sm::log::write("[pair] connected; starting ECDH exchange");
 
-    sm::pairing::PairingExchange ex(*t, g_app->self);
+    sm::pairing::PairingExchange ex(t, g_app->self);
     if (!ex.start()) {
         showToast(L"Skittermouse", L"Pairing failed to start.");
-        g_app->pairingActive.store(false);
-        return;
+        return false;
     }
     sm::pairing::PairingExchange::Status st = sm::pairing::PairingExchange::Status::NeedMore;
     while (st == sm::pairing::PairingExchange::Status::NeedMore && GetTickCount64() < deadline) {
@@ -358,14 +428,12 @@ void pairThreadProc(std::string host) {
     }
     if (st != sm::pairing::PairingExchange::Status::Ok) {
         showToast(L"Skittermouse", L"Pairing exchange failed.");
-        g_app->pairingActive.store(false);
-        return;
+        return false;
     }
 
     if (!confirmPairingCode(ex.code(), ex.peerId())) { // human numeric comparison (spec 7.1)
         showToast(L"Skittermouse", L"Pairing rejected.");
-        g_app->pairingActive.store(false);
-        return;
+        return false;
     }
 
     {
@@ -376,7 +444,7 @@ void pairThreadProc(std::string host) {
         sm::core::PairedDevice dev;
         dev.id = ex.peerId();
         dev.name = ex.peerId();
-        dev.last_ip = host; // set only if we initiated; the peer dials us otherwise
+        dev.last_ip = initiatedHost; // set only if we initiated; the peer dials us otherwise
         dev.port = kMeshPort;
         dev.os = "windows";
         g_app->config.addDevice(dev);
@@ -384,7 +452,74 @@ void pairThreadProc(std::string host) {
         if (!cpath.empty()) g_app->config.saveToFile(cpath);
     }
     showToast(L"Skittermouse", L"Paired with " + toWide(ex.peerId()));
+    sm::log::write("[pair] paired with " + ex.peerId());
+    return true;
+}
+
+// End the current pairing session: stops the discovery + accept loops.
+void endPairingSession() {
     g_app->pairingActive.store(false);
+    if (g_app->discoveryDlg) PostMessageW(g_app->discoveryDlg, WM_CLOSE, 0, 0);
+}
+
+// Initiator: the user picked a discovered device; dial its pairing port and run the
+// exchange. pairEngaged guards against also accepting an inbound pairing this session
+// (which would derive a second, mismatched PSK).
+void pairInitProc(std::string host) {
+    while (!host.empty() && (host.back() == ' ' || host.back() == '\r' || host.back() == '\n'))
+        host.pop_back();
+    while (!host.empty() && host.front() == ' ') host.erase(host.begin());
+
+    if (g_app->pairEngaged.exchange(true)) return; // an inbound pairing already won
+    sm::log::write("[pair] initiating to " + host);
+
+    std::unique_ptr<sm::net::Transport> t;
+    const uint64_t deadline = GetTickCount64() + 15000;
+    while (!t && GetTickCount64() < deadline && g_app->pairingActive.load()) {
+        std::unique_ptr<sm::net::Transport> raw(sm::net::createWsClientTransport());
+        if (raw && raw->connect(host, kPairPort)) t = std::move(raw);
+        else Sleep(300);
+    }
+    if (!t) {
+        sm::log::write("[pair] could not reach " + host);
+        showToast(L"Skittermouse", L"Could not reach the selected PC.");
+    } else {
+        runPairingSession(*t, host);
+    }
+    endPairingSession();
+}
+
+// Acceptor: while pairing mode is on, wait for an inbound pairing connection. The
+// first side to connect wins the pairEngaged race; the other becomes the acceptor.
+void pairAcceptProc() {
+    while (g_app->pairingActive.load() && !g_app->pairEngaged.load()) {
+        std::unique_ptr<sm::net::Transport> t(sm::net::wsAcceptOne(kPairPort, 500));
+        if (!t) continue;
+        if (g_app->pairEngaged.exchange(true)) break; // we already initiated -> ignore
+        sm::log::write("[pair] inbound pairing connection accepted");
+        if (g_app->discoveryDlg) PostMessageW(g_app->discoveryDlg, WM_CLOSE, 0, 0);
+        runPairingSession(*t, ""); // peer dialed us; it will dial the mesh port too
+        break;
+    }
+    endPairingSession();
+}
+
+// Presence: broadcast our beacon and listen for others on the discovery port while
+// pairing mode is on, feeding the live table the picker reads (spec 6).
+void discoveryProc() {
+    sm::net::Beacon self;
+    self.machine_name = g_app->self;
+    self.machine_id = g_app->self;
+    self.port = kMeshPort;
+    self.os = 0; // windows
+    while (g_app->pairingActive.load()) {
+        sm::net::broadcastBeacon(self, kDiscoveryPort);
+        sm::net::Beacon in;
+        if (sm::net::receiveBeacon(kDiscoveryPort, 300, in) && in.machine_id != g_app->self) {
+            std::lock_guard<std::mutex> lk(g_app->discMutex);
+            g_app->discovered.onBeacon(in, GetTickCount64());
+        }
+    }
 }
 
 void showMenu(HWND hwnd) {
@@ -468,28 +603,38 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                               L"Startup setting unchanged (administrator approval declined).");
                 }
             } else if (id == kIdAddDevice) {
-                // Pairing (spec 7.1): prompt for the peer IP (or blank to wait), then
-                // run the ECDH numeric-comparison on a background thread.
+                // Auto-discovery pairing (spec 6/7.1): start broadcasting + listening
+                // for LAN beacons and accepting an inbound pairing, then show a live
+                // picker of discovered devices (name + IP -- no manual IP typing).
                 if (g_app->pairingActive.load()) {
                     showToast(L"Skittermouse", L"Pairing already in progress\u2026");
                 } else {
-                    std::wstring hostW;
-                    if (promptText(L"Add device",
-                                   L"Enter the other PC's IP address (or leave blank to wait for "
-                                   L"it), then click Add device on that PC too:",
-                                   hostW)) {
-                        std::string host;
-                        int n = WideCharToMultiByte(CP_UTF8, 0, hostW.c_str(), -1, nullptr, 0,
-                                                    nullptr, nullptr);
-                        host.resize(n > 0 ? static_cast<std::size_t>(n - 1) : 0);
-                        if (n > 0)
-                            WideCharToMultiByte(CP_UTF8, 0, hostW.c_str(), -1, host.data(), n,
-                                                nullptr, nullptr);
-                        if (g_app->pairThread.joinable()) g_app->pairThread.join();
-                        g_app->pairingActive.store(true);
-                        showToast(L"Skittermouse", L"Pairing\u2026 compare the code on both PCs.");
-                        g_app->pairThread = std::thread(pairThreadProc, host);
+                    // Join any previous session's threads before starting a new one.
+                    if (g_app->discoveryThread.joinable()) g_app->discoveryThread.join();
+                    if (g_app->pairAcceptThread.joinable()) g_app->pairAcceptThread.join();
+                    if (g_app->pairThread.joinable()) g_app->pairThread.join();
+                    {
+                        std::lock_guard<std::mutex> lk(g_app->discMutex);
+                        g_app->discovered = sm::net::DiscoveryTable{};
                     }
+                    g_app->pairEngaged.store(false);
+                    g_app->pairingActive.store(true);
+                    g_app->discoveryThread = std::thread(discoveryProc);
+                    g_app->pairAcceptThread = std::thread(pairAcceptProc);
+
+                    std::string ip, name;
+                    const bool picked = showDiscoveryPicker(ip, name);
+                    if (picked && !ip.empty()) {
+                        if (g_app->pairThread.joinable()) g_app->pairThread.join();
+                        showToast(L"Skittermouse",
+                                  L"Pairing with " + toWide(name) + L"\u2026 compare the code.");
+                        g_app->pairThread = std::thread(pairInitProc, ip);
+                    } else if (!g_app->pairEngaged.load()) {
+                        // Cancelled with no inbound pairing running -> end the session.
+                        endPairingSession();
+                    }
+                    // If pairEngaged (an inbound pairing was accepted while the picker
+                    // was open), the accept thread finishes and ends the session.
                 }
             } else if (id >= kIdDeviceBase && g_app->mesh) {
                 std::size_t idx = id - kIdDeviceBase;
@@ -562,6 +707,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             g_app->pairingActive.store(false);
             if (g_app->netThread.joinable()) g_app->netThread.join();
             if (g_app->pairThread.joinable()) g_app->pairThread.join();
+            if (g_app->discoveryThread.joinable()) g_app->discoveryThread.join();
+            if (g_app->pairAcceptThread.joinable()) g_app->pairAcceptThread.join();
             RemoveClipboardFormatListener(hwnd);
             UnregisterHotKey(hwnd, kHotkeyId);
             Shell_NotifyIconW(NIM_DELETE, &g_app->nid);
@@ -576,6 +723,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
 int runTrayApp() {
     AppState app;
     g_app = &app;
+
+    sm::log::init(logPath()); // on-machine debug log: %APPDATA%\Skittermouse\log.txt
+    sm::log::write("[app] Skittermouse starting");
 
     std::string cfg = configPath();
     if (!cfg.empty()) app.config = sm::core::Config::loadFromFile(cfg);
