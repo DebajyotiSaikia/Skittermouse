@@ -52,6 +52,35 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 
 ## Remaining — cross-platform / Windows
 
+### Run-after-install not launching the app (Windows) — still reported
+
+- The installer finish-page "Run Skittermouse" checkbox does not launch the app. An attempted fix
+  shipped (single-instance guard + stop-the-running-instance-before-reinstall + firewall rules),
+  but it is **still reported not working** — re-investigate on a clean install: does the checkbox
+  appear + fire, does the elevated installer's `Exec` actually start the exe, and does the tray
+  icon show? Check `%APPDATA%\Skittermouse\log.txt` for an `[app] starting` line after Finish.
+
+### One-way LAN discovery: corp PC sees home PC, home PC can't see corp PC — still reported
+
+- The per-interface directed-broadcast fix shipped, but it is **still reported**. Re-investigate:
+  the corp PC's **outbound** UDP 47802 beacon may be blocked by corp/endpoint firewall or split by
+  the VPN, or the home PC's **inbound** may be dropped. Confirm both directions with a packet
+  capture on UDP 47802, compare each side's `log.txt`, and verify the beacon egresses the LAN NIC
+  (not just the VPN adapter) on the corp machine.
+
+### Full-repo audit — memory/handle leaks, security, correctness
+
+- Scan **every line of every file**. Memory/handle leaks: RAII gaps and missing
+  free/delete/`Release`/`CloseHandle`/`CFRelease`/`freeaddrinfo`/`closesocket`/keychain cleanup on
+  every path (incl. error/early-return). Security (OWASP-class): boundary input validation, buffer
+  bounds, integer overflow, GCM nonce uniqueness, TLS/verify posture, no secrets in logs, prompt-
+  injection resistance in any tool output. Plus general correctness/robustness. Fix what's found.
+
+### 100% test coverage
+
+- Bring line + branch coverage to 100% across the codebase; add tests for every uncovered path
+  (incl. error branches) and wire a coverage report into CI so regressions are caught.
+
 ### Lock-screen unlock — runtime open question (§14)
 
 - Unlock is switch-then-type only (no scripted credentials). **Verify on a real locked Windows
