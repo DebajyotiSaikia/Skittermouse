@@ -71,11 +71,12 @@ if(WIN32)
 elseif(APPLE)
     enable_language(OBJCXX)
     list(APPEND SM_PLATFORM_SOURCES
-        # macOS native backends are not implemented yet (see todo.md, Step 6). The
-        # portable sources above still compile here; the app stub links only what it
-        # references, so no macOS crypto symbols are required for the stub build.
+        src/platform/inject_mac.mm        # Section 3.2: CGEventPost
+        src/platform/capture_mac.mm       # Section 3.1: CGEventTapCreate
+        src/platform/lock_mac.mm          # Section 14: CGSession suspend
+        src/platform/clipboard_mac.mm     # Section 8: NSPasteboard
+        src/platform/autostart_mac.mm     # Section 13: LaunchAgent plist
         # src/platform/crypto_mac.mm      # Sections 5.4/7: CommonCrypto + Security.framework
-        # src/platform/capture_mac.mm     # Section 3.1
     )
 endif()
 
@@ -90,7 +91,8 @@ if(WIN32)
     target_link_libraries(skittermouse_platform PUBLIC bcrypt ws2_32 user32 shell32)
 elseif(APPLE)
     target_link_libraries(skittermouse_platform PUBLIC
-        "-framework Security" "-framework CoreFoundation")
+        "-framework Security" "-framework CoreFoundation" "-framework CoreGraphics"
+        "-framework AppKit" "-framework Foundation")
 endif()
 
 # --- app executable ----------------------------------------------------------
