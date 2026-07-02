@@ -24,15 +24,17 @@ jobs:
       - name: Configure (instrumented)
         run: cmake -S . -B build -G Ninja -DSM_COVERAGE=ON -DSM_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
 
-      - name: Build
-        run: cmake --build build
+      - name: Build tests
+        # Only the test target: the tray app exe has no Linux implementation (no
+        # runTrayApp on Linux), so the default `all` target would fail to link here.
+        run: cmake --build build --target skittermouse_tests
 
       - name: Run unit tests
         run: ./build/tests/skittermouse_tests
 
       - name: Coverage report
         run: |
-          gcovr --root . \
+          gcovr --root . --object-directory build \
             --filter 'src/' \
             --exclude 'src/platform/ws_transport_posix.cpp' \
             --txt --output coverage.txt \
