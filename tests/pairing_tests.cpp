@@ -68,6 +68,11 @@ void run_pairing_tests() {
         SM_CHECK(*ks.getPsk("dev-A") == p1);
         SM_CHECK(ks.getPsk("absent") == nullptr);
 
+        // devices() lists every paired id.
+        auto ids = ks.devices();
+        SM_CHECK_EQ(ids.size(), 2u);
+        SM_CHECK((ids[0] == "dev-A" || ids[1] == "dev-A"));
+
         std::array<uint8_t, 32> protKey{};
         for (int i = 0; i < 32; ++i) protKey[i] = static_cast<uint8_t>(0xA0 + i);
         sm::crypto::Bytes blob = ks.serializeEncrypted(protKey.data());
