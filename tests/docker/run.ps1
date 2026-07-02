@@ -31,6 +31,13 @@ try {
     if ($code -ne 0) { throw "Connect/forward FAILED (exit $code)" }
     Write-Host "  PASS"
 
+    Write-Host "`n== Test 3: chunked file transfer over TCP (byte-verified) =="
+    docker compose -f docker-compose.file.yml up --abort-on-container-exit --exit-code-from fnodeb 2>&1 | Select-String "SENT|RESULT"
+    $fcode = $LASTEXITCODE
+    docker compose -f docker-compose.file.yml down -v 2>&1 | Out-Null
+    if ($fcode -ne 0) { throw "File transfer FAILED (exit $fcode)" }
+    Write-Host "  PASS"
+
     Write-Host "`n== ALL DOCKER NETWORK TESTS PASSED =="
 } finally {
     Pop-Location

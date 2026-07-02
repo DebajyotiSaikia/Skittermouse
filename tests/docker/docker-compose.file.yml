@@ -1,0 +1,21 @@
+# File-transfer validation (spec 9): the sender streams a 500 KB file as chunked
+# FileChunks over real TCP; the receiver reassembles by offset and verifies every
+# byte. (The OS delay-render UI -- Explorer/Finder -- is the only piece this can't
+# cover without a real desktop.)
+services:
+  fnodeb:
+    image: skittermouse-netcheck
+    entrypoint: ["/src/build/netfile"]
+    command: ["--role","receiver","--listen","9000","--size","500000","--seconds","40"]
+    networks: [smnet]
+
+  fnodea:
+    image: skittermouse-netcheck
+    depends_on: [fnodeb]
+    entrypoint: ["/src/build/netfile"]
+    command: ["--role","sender","--listen","9001","--connect","fnodeb:9000","--size","500000","--seconds","40"]
+    networks: [smnet]
+
+networks:
+  smnet:
+    driver: bridge

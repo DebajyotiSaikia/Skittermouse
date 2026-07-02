@@ -19,7 +19,7 @@ COPY packaging ./packaging
 # tray, which doesn't exist on Linux; only the netcheck target and its libraries are
 # built here).
 RUN cmake -S . -B build -DSM_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build --target netcheck netpair -j
+    && cmake --build build --target netcheck netpair netfile -j
 
 # Default is overridden by docker-compose per node.
 ENTRYPOINT ["/src/build/netcheck"]
