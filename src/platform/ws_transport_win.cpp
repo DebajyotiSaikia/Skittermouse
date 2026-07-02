@@ -68,6 +68,11 @@ public:
             if (resp.size() > 8192) return false;
         }
         if (resp.find(wsAcceptKey(key)) == std::string::npos) return false;
+        // The handshake above used blocking reads; switch to non-blocking now so
+        // recv() (whose WSAEWOULDBLOCK path returns 0) can be polled by the mesh
+        // loop without ever blocking it.
+        u_long nonBlocking = 1;
+        ioctlsocket(sock_, FIONBIO, &nonBlocking);
         connected_ = true;
         return true;
     }
@@ -116,7 +121,20 @@ private:
         while (sent < len) {
             int n = ::send(sock_, reinterpret_cast<const char*>(d) + sent,
                            static_cast<int>(len - sent), 0);
-            if (n <= 0) return false;
+            if (n == SOCKET_ERROR) {
+                // Non-blocking socket with a full send buffer: wait briefly for
+                // writability, then retry. Bounded so a wedged peer can't hang us.
+                if (WSAGetLastError() == WSAEWOULDBLOCK) {
+                    fd_set wr;
+                    FD_ZERO(&wr);
+                    FD_SET(sock_, &wr);
+                    timeval tv{0, 100000}; // 100 ms
+                    if (select(0, nullptr, &wr, nullptr, &tv) <= 0) return false;
+                    continue;
+                }
+                return false;
+            }
+            if (n == 0) return false;
             sent += static_cast<std::size_t>(n);
         }
         return true;
@@ -192,6 +210,10 @@ Transport* wsAcceptOne(uint16_t port, int timeoutMs) {
         if (n <= 0) { closesocket(client); return nullptr; }
         sent += n;
     }
+    // Match the client path: the accepted socket is non-blocking so the mesh can
+    // poll recv() without blocking (recv's WSAEWOULDBLOCK path returns 0).
+    u_long nonBlocking = 1;
+    ioctlsocket(client, FIONBIO, &nonBlocking);
     return new WinWsTransport(client, /*client role*/ false);
 }
 
