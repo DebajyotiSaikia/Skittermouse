@@ -13,6 +13,13 @@ on:
     - cron: "0 0 * * *" # 00:00 UTC daily
   workflow_dispatch: {}
 
+# The publish job creates/updates a GitHub Release (gh release create), which needs
+# write access to repo contents. Declared explicitly so it works even when the repo's
+# default GITHUB_TOKEN is read-only (otherwise: "403 Resource not accessible by
+# integration").
+permissions:
+  contents: write
+
 concurrency:
   group: nightly-release
   cancel-in-progress: true
