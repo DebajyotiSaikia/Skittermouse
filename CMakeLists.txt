@@ -24,7 +24,10 @@ add_library(skittermouse_core STATIC
     src/core/clipboard_sync.cpp
     src/core/heartbeat.cpp
     src/core/input_pipeline.cpp
+    src/core/hotkey.cpp
+    src/ui/menu_model.cpp
     src/net/message_codec.cpp
+    src/net/file_transfer.cpp
 )
 target_include_directories(skittermouse_core PUBLIC src)
 target_compile_features(skittermouse_core PUBLIC cxx_std_17)
