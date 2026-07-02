@@ -5,16 +5,18 @@ is not yet built** — as each item lands, delete it from here.
 
 ## Status
 
-- Foundation landed and unit-tested (native C++ only, **438 checks green**): core logic
-  (config, key_translation, ownership, election, stuck-key tracker, clipboard loop-prevention),
-  crypto (AES-256-GCM + ECDH P-256 + SHA/HMAC/HKDF, KAT-verified), pairing (ECDH handshake,
-  6-digit code, encrypted key store), and net primitives (WS framing, version-checked message
-  codec, session token, WoL magic packet, discovery beacon codec). Windows capture/injection
-  compile.
-- Remaining: the WSS-over-TLS transport, the switching UX (hotkey/picker/tray), the OS
-  clipboard/file-promise/lock/autostart/wol-diag glue, all macOS `.mm` backends, the real
+- Foundation + app-logic landed and unit-tested (native C++ only, **533 checks green**,
+  Windows + macOS CI green): core logic (config, key_translation, ownership, election,
+  stuck-key tracker, clipboard loop-prevention, heartbeat fail-safe, input pipeline), crypto
+  (AES-256-GCM + ECDH P-256 + SHA-256/SHA-1/HMAC/HKDF/base64, KAT-verified), pairing (ECDH
+  handshake, 6-digit code, encrypted key store), net (WS handshake + framing + assembler,
+  version-checked message codec, session token, WoL, discovery beacon + table), and a headless
+  e2e flow through the real Transport (loopback). Windows capture/injection, TCP+WebSocket
+  client transport, and screen-lock compile.
+- Remaining: TLS-wrap + listener for the transport, the switching UX (hotkey/picker/tray), OS
+  clipboard/file-promise/autostart/wol-diag glue, all macOS `.mm` backends, the real
   `main.cpp` app wiring, and hardware / two-machine / macOS validation.
-- The shipped app is still a console stub — no UI/tray/network wired yet.
+- The shipped app is still a console stub — the subsystems above aren't wired into a UI yet.
 
 ---
 
@@ -32,9 +34,9 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 2 — Capture + injection
 
-- [ ] Wire capture → stuck-key tracker → forward, and inject on the sink; run the local
-      hook→inject sanity loop. (`platform/capture_win.cpp` + `inject_win.cpp` exist and
-      compile; the wiring and real-hardware validation remain.)
+- [ ] Wire the (done, tested) `core/input_pipeline` (capture → stuck-key tracker → forward)
+      to `capture_win`/`inject_win` in the real app, and run the local hook→inject sanity
+      loop. (pure pipeline + capture/inject compile; app wiring + hardware validation remain.)
 
 ### Step 3 — Pairing (§7)
 
@@ -43,12 +45,12 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 4 — Input channel (§5)
 
-- [ ] WSS-over-TLS backend (Schannel) implementing `Transport` — WS upgrade handshake + native
-      TLS; differentiate `/input` vs `/files` (§5.1, §5.5).
+- [ ] TLS-wrap (Schannel) the (done) TCP+WebSocket client transport for full `wss://`, and add
+      the server/listener side (accept + server handshake); differentiate `/input` vs `/files`.
 - [ ] `net/ws_input_channel.h/.cpp` — persistent channel carrying the hot-path messages;
       AES-256-GCM per message with a strictly-incrementing nonce; version check on connect.
 - [ ] Milestone: two machines forwarding encrypted input end-to-end.
-      (transport interface + version-checked message codec: done.)
+      (transport interface, WS handshake/framing/assembler, client transport, message codec: done.)
 
 ### Step 5 — Switching UX (§4, §10, §15)
 
@@ -71,8 +73,8 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 7 — Discovery (§6)
 
-- [ ] UDP broadcast/listen sockets around the beacon codec; per-machine last-seen timeout
-      drops stale entries; "don't broadcast on this network" toggle. (beacon packet codec: done.)
+- [ ] UDP broadcast/listen sockets feeding the (done) beacon codec + `net/discovery_table`
+      (last-seen/staleness); "don't broadcast on this network" toggle. (codec + table: done.)
 
 ### Step 8 — Clipboard sync (§8)
 
@@ -115,13 +117,13 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 - [ ] "Waking…" state + 30–60 s timeout + guided fallback flow around the (done) magic-packet UDP sender (§12).
 - [ ] `platform/autostart_win.cpp` — Task Scheduler, **run elevated** (UIPI injection into elevated windows) (§13).
 - [ ] `platform/autostart_mac.mm` — `LaunchAgent` plist (§13).
-- [ ] `platform/lock_win.cpp` — `LockWorkStation`; opt-in per machine (§14).
-- [ ] `platform/lock_mac.mm` — equivalent lock call (§14).
+- [ ] `platform/lock_mac.mm` — equivalent lock call (§14). (`lock_win` = LockWorkStation: done.)
 - [ ] Unlock = switch-then-type only (no scripted credentials); **verify Secure Desktop/`LogonUI` behavior on a real locked machine** (§14 open question).
 
 ### Step 12 — Failure & edge-state hardening (§15)
 
-- [ ] Fail-safe local control on owner drop; heartbeat watchdog ~1–2 s (design for silent death, not clean goodbye).
+- [ ] Wire the (done) `core/heartbeat` watchdog into the app: on owner-drop, every sink reverts
+      to local control (~1–2 s timeout, silent-death safe).
 - [ ] Connection-dropped tray state + one-time (non-repeating) notification.
 - [ ] Switch-to-unreachable = no-op / brief "unavailable" flash, never hang/crash.
 - [ ] File-transfer mid-stream failure surfaced via native `IStream`/promise error (verify in testing).
@@ -133,14 +135,15 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ## Tests — 100% coverage (all steps)
 
-- [~] Unit tests for every pure-logic module landed so far (**438 checks**, native harness):
-  core logic, crypto (KAT + OpenSSL cross-check), pairing, session token, WS framing,
-  message codec, WoL, beacon, config, key_translation. Extend to 100% as new modules land.
-- [ ] **Comprehensive e2e automation covering 100% of scenarios** — extend the mesh simulator
-      to a full flow: pairing → connect → switch (all triggers) → clipboard sync → file
-      transfer → coordinator failover/failback → owner-drop fail-safe → protocol-mismatch
-      reject → switch-to-unreachable → stuck-key release, through the app seams, headless.
-- [~] Keep the Windows CI build green and all tests passing at every step. (currently 438/438.)
+- [~] Unit tests for every pure-logic module landed so far (**533 checks**, native harness):
+      core logic, crypto (KAT + OpenSSL cross-check, incl. SHA-1/base64), pairing, session
+      token, WS handshake/framing/assembler, message codec, WoL, beacon, discovery table,
+      heartbeat, input pipeline, config, key_translation. Extend to 100% as new modules land.
+- [~] Headless e2e flow through the real Transport (loopback): pairing → session token → input
+      forwarding + stuck-key release → ownership switch → clipboard loop-prevention → heartbeat
+      fail-safe → protocol-mismatch reject. Extend with clipboard/file-transfer over the wire
+      and coordinator failover/failback as those land.
+- [~] Keep the Windows + macOS CI builds green and all tests passing at every step. (533/533.)
 
 ---
 
