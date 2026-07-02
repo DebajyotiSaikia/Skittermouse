@@ -118,6 +118,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             UINT id = LOWORD(w);
             if (id == kIdQuit) {
                 PostQuitMessage(0);
+            } else if (id == kIdSettings) {
+                // Settings is the flat-file config (spec 16). Create it if missing,
+                // then open it in the default text editor; changes apply on next
+                // launch. (Previously this menu item had no handler and did nothing.)
+                std::string path = configPath();
+                if (!path.empty()) {
+                    std::wstring wpath = toWide(path);
+                    if (GetFileAttributesW(wpath.c_str()) == INVALID_FILE_ATTRIBUTES)
+                        g_app->config.saveToFile(path);
+                    ShellExecuteW(hwnd, L"open", wpath.c_str(), nullptr, nullptr,
+                                  SW_SHOWNORMAL);
+                    showToast(L"Skittermouse",
+                              L"Edit the config, then restart Skittermouse to apply.");
+                }
             } else if (id >= kIdDeviceBase && g_app->mesh) {
                 std::size_t idx = id - kIdDeviceBase;
                 if (idx < g_app->config.devices.size())
