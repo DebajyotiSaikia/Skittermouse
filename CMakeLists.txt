@@ -80,6 +80,7 @@ elseif(APPLE)
         src/platform/clipboard_mac.mm     # Section 8: NSPasteboard
         src/platform/autostart_mac.mm     # Section 13: LaunchAgent plist
         src/platform/crypto_mac.mm        # Sections 5.4/7: CommonCrypto + Security.framework
+        src/platform/tray_mac.mm          # Section 10: NSStatusBar tray app shell
         src/pairing/pairing_dialog_mac.mm # Section 7.1: NSAlert confirm dialog
     )
 endif()
