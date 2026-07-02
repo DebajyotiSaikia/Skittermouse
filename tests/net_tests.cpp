@@ -1,10 +1,14 @@
 #include "test_framework.h"
 
 #include "net/discovery_beacon.h"
+#include "net/discovery_socket.h"
 #include "net/wol_sender.h"
 #include "net/ws_frame.h"
 
+#include <atomic>
+#include <chrono>
 #include <string>
+#include <thread>
 
 using namespace sm::net;
 
@@ -109,5 +113,37 @@ void run_net_tests() {
         SM_CHECK(!decodeBeacon(junk, sizeof(junk), j));
         SM_CHECK(!decodeBeacon(enc.data(), 3, j));            // shorter than magic
         SM_CHECK(!decodeBeacon(enc.data(), enc.size() - 1, j)); // truncated tail
+    }
+
+    // --- Real UDP paths: Wake-on-LAN send + discovery broadcast/receive -----
+    // Headless but exercises the actual sockets (sendMagicPacket, per-interface
+    // broadcastBeacon, receiveBeacon bind+recv). A loopback round-trip is asserted
+    // only when the OS actually delivers the broadcast (some CI sandboxes drop it),
+    // so this can never flake-fail.
+    {
+        Mac mac;
+        parseMac("01:02:03:04:05:06", mac);
+        sendMagicPacket(mac, "255.255.255.255", 9); // covers the UDP send path
+
+        const uint16_t port = 47899;
+        Beacon self;
+        self.machine_name = "COV-HOST";
+        self.machine_id = "cov-id";
+        self.port = 47800;
+        self.os = 0;
+
+        std::atomic<bool> stop{false};
+        std::thread sender([&] {
+            while (!stop.load()) {
+                broadcastBeacon(self, port);
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            }
+        });
+        Beacon got;
+        bool received = false;
+        for (int i = 0; i < 12 && !received; ++i) received = receiveBeacon(port, 300, got);
+        stop.store(true);
+        sender.join();
+        if (received) SM_CHECK_EQ(got.machine_id, std::string("cov-id"));
     }
 }

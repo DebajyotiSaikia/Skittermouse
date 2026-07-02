@@ -1,0 +1,57 @@
+name: Coverage
+
+# Line + branch coverage of the portable, headless-testable code (core logic, net
+# codecs, crypto, pairing, app, ui model). The OS glue (Win32 COM / Schannel / Cocoa /
+# SecureTransport) is not compiled on Linux, so it never enters this number -- it is
+# validated by the Windows/macOS CI build, the Docker network rig, and on hardware.
+# ws_transport_posix is the Docker rig's transport (integration-tested, not unit-tested)
+# and is excluded so it doesn't understate the unit-coverage figure.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ cmake ninja-build libssl-dev gcovr
+
+      - name: Configure (instrumented)
+        run: cmake -S . -B build -G Ninja -DSM_COVERAGE=ON -DSM_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run unit tests
+        run: ./build/tests/skittermouse_tests
+
+      - name: Coverage report
+        run: |
+          gcovr --root . \
+            --filter 'src/' \
+            --exclude 'src/platform/ws_transport_posix.cpp' \
+            --txt --output coverage.txt \
+            --xml-pretty --output coverage.xml
+          cat coverage.txt
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '### Skittermouse coverage (portable, unit-tested code)';
+            echo '```';
+            cat coverage.txt;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.txt
+            coverage.xml

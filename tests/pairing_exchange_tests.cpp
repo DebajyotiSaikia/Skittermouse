@@ -5,6 +5,7 @@
 #include "pairing/pairing_exchange.h"
 
 #include <string>
+#include <vector>
 
 using namespace sm;
 
@@ -50,5 +51,41 @@ void run_pairing_exchange_tests() {
         for (int i = 0; i < 5 && sa == pairing::PairingExchange::Status::NeedMore; ++i)
             sa = a.poll();
         SM_CHECK(sa == pairing::PairingExchange::Status::Error);
+    }
+
+    // Transport error (recv < 0, e.g. the peer dropped) -> Error, not a hang.
+    {
+        struct ErrTransport : sm::net::Transport {
+            bool connect(const std::string&, uint16_t) override { return true; }
+            bool isConnected() const override { return true; }
+            bool send(const uint8_t*, std::size_t) override { return true; }
+            int recv(uint8_t*, std::size_t) override { return -1; }
+            void close() override {}
+        } err;
+        pairing::PairingExchange e(err, "X");
+        SM_CHECK(e.poll() == pairing::PairingExchange::Status::Error);
+    }
+
+    // A malformed inbound message (length doesn't match [idlen][id][64-byte point])
+    // is rejected cleanly.
+    {
+        smtest::LoopbackPair link;
+        pairing::PairingExchange a(link.a, "A");
+        const uint8_t bad[] = {5, 'a', 'b', 'c', 'd', 'e'}; // claims idlen 5, no point
+        link.b.send(bad, sizeof(bad));
+        SM_CHECK(a.poll() == pairing::PairingExchange::Status::Error);
+    }
+
+    // A well-framed message with an INVALID public point fails the ECDH step.
+    {
+        smtest::LoopbackPair link;
+        pairing::PairingExchange a(link.a, "A");
+        std::vector<uint8_t> msg;
+        const std::string peer = "BADPT";
+        msg.push_back(static_cast<uint8_t>(peer.size()));
+        msg.insert(msg.end(), peer.begin(), peer.end());
+        msg.insert(msg.end(), 64, 0x00); // 64 zero bytes: not a valid EC point
+        link.b.send(msg.data(), msg.size());
+        SM_CHECK(a.poll() == pairing::PairingExchange::Status::Error);
     }
 }

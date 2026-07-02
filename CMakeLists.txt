@@ -21,6 +21,15 @@ endif()
 
 option(SM_BUILD_TESTS "Build Skittermouse unit tests" ON)
 
+# Coverage instrumentation for the headless test build (gcc/clang only -- used by the
+# Linux coverage job / Docker to measure the portable core, net codecs, crypto, pairing
+# and app logic). No effect on the shipped MSVC/Xcode builds.
+option(SM_COVERAGE "Instrument for gcov/llvm-cov coverage (gcc/clang)" OFF)
+if(SM_COVERAGE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_compile_options(--coverage -O0 -g)
+    add_link_options(--coverage)
+endif()
+
 # --- core: pure logic, NO platform / OS includes (spec Section 2.2, 16) ------
 # This library MUST compile and be unit-testable without any Win32 or Cocoa
 # headers. Anything OS-specific belongs in src/platform/, behind an interface.

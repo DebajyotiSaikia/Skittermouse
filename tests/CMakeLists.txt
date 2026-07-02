@@ -4,6 +4,7 @@ add_executable(skittermouse_tests
     ownership_state_tests.cpp
     server_election_tests.cpp
     config_tests.cpp
+    log_tests.cpp
     key_translation_tests.cpp
     wake_flow_tests.cpp
     crypto_tests.cpp
