@@ -5,7 +5,7 @@ is not yet built** — as each item lands, delete it from here.
 
 ## Status
 
-- Native C++ only (product), **837 checks green**, Windows + macOS CI green at every commit.
+- Native C++ only (product), **870 checks green**, Windows + macOS CI green at every commit.
 - **The full app loop is validated headlessly in-process** by the mocked-systems e2e set
   (`tests/e2e_full_system_tests.cpp` + `tests/mock_systems.h`): every OS boundary is faked
   (MockInjector, MockClipboard, an in-process network Switchboard) so pairing → stored PSK →
@@ -26,7 +26,8 @@ is not yet built** — as each item lands, delete it from here.
   file-transfer session + `FileChannel`, WoL `WakeFlow`, and the config store. Both Windows
   (Shell_NotifyIcon) and macOS (NSStatusBar) are real tray apps; the Windows tray has the mesh,
   hotkey+fallback, picker, clipboard, WoL, an opt-in run-on-startup toggle, a working Settings
-  item, **auto-discovery pairing** (LAN beacon → pick device by name+IP, no manual IP typing), and
+  item, **auto-discovery pairing** (LAN beacon → pick device by name+IP, no manual IP typing),
+  **native file copy/paste** (delay-render IDataObject → on-demand encrypted /files channel), and
   a **file debug log** (`%APPDATA%\Skittermouse\log.txt`); macOS has the Carbon hotkey + NSPanel
   picker. **Windows WS transport is now wss (Schannel TLS)**; POSIX WS transport for macOS/Linux.
 - Remaining items all need real hardware (two Windows machines, a Mac desktop, or Explorer/Finder)
@@ -74,16 +75,19 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 
 ### Step 10 — File transfer: OS delay-render (§9)
 
-- [ ] `platform/filepromise_win.cpp` — `IDataObject` delay-render: `CFSTR_FILEDESCRIPTORW` +
-      `CFSTR_FILECONTENTS` (`IStream::Read` pulls bytes on paste) over the (done) file session;
-      multi-file; native Explorer progress + error UI (§9.1).
+- [x] **Windows file transfer DONE (code-complete, Explorer-gated for runtime)**: a native
+      delay-render `IDataObject` advertises `CFSTR_FILEDESCRIPTORW` + promised `CFSTR_FILECONTENTS`,
+      each backed by a read-only `IStream` that pulls bytes through an injected byte source only
+      on paste (`filepromise_win.cpp`, unit-tested headlessly incl. the mid-stream error path).
+      Wired into the tray: copying files (CF_HDROP) broadcasts a `FilePromiseAnnounce` over the
+      mesh + remembers the paths; the destination puts a matching promise on its clipboard whose
+      byte source dials the source's on-demand `/files` channel (secure link, port 47803) and
+      drives the (done) `net/FileChannel` — so a paste in Explorer materialises the files with its
+      OWN native copy-progress + error UI. Multi-file; no staging temp. Needs two Windows machines
+      + Explorer to validate the last mile.
 - [ ] `platform/filepromise_mac.mm` — `NSFilePromiseProvider`; native Finder progress (§9.2).
-- [ ] On-paste socket-open glue: open the dedicated `/files` WS connection (+ session token)
-      when a promised paste/drop happens, and hand it to the (done) `net/FileChannel` driver.
-      The FileChannel byte path (FilePromiseMeta + chunked FileChunks, reassembled by offset;
-      multi-file/zero-byte/partial-delivery unit-tested) is **validated over real TCP** by the
-      two-container rig (`tools/netfile` transfers a 500 KB file, byte-verified). Only the OS
-      delay-render trigger + connection-open remain, and they need Explorer/Finder to test.
+      (The mesh announce, the `/files` secure channel, and `net/FileChannel` are cross-platform and
+      done; only the macOS OS-provider glue remains, and it needs a Mac + Finder.)
 
 ### Step 11 — Lock/unlock finish (§14)
 
@@ -95,8 +99,9 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 
 ### Step 12 — Failure & edge-state UI (§15)
 
-- [ ] File-transfer mid-stream failure surfaced via native `IStream`/promise error
-      (lands with the file-promise work in Step 10).
+- [x] File-transfer mid-stream failure surfaced via native `IStream` error (Windows): the promised
+      stream returns `STG_E_READFAULT` when the byte source fails, so Explorer shows its own error
+      UI (unit-tested). (macOS equivalent lands with `filepromise_mac.mm`.)
       (heartbeat fail-safe, discovery staleness, simultaneous-claim resolution, codec version
       gate, one-time connection-dropped/return toast, switch-to-unreachable "unavailable" flash,
       **protocol-version-mismatch "update Skittermouse on <machine>" toast** (throttled per peer,
@@ -124,6 +129,17 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 
 - Not connecting? Check the firewall, that both are on the same LAN, and that both run the same
   build. The `%APPDATA%\Skittermouse\log.txt` file logs each dial/accept/pair/TLS step.
+
+### Two Windows machines — copy/paste a file (Step 10, built)
+
+1. Pair + connect two PCs as above; allow TCP 47803 (the /files channel) through the firewall.
+2. On PC-A: copy a file (or several) in Explorer (Ctrl+C).
+3. On PC-B: paste (Ctrl+V) into any folder → Explorer shows its own copy-progress dialog while the
+   bytes stream from PC-A over the encrypted /files channel; the files land byte-for-byte.
+4. Mid-transfer failure (e.g. PC-A goes offline) surfaces as Explorer's own native copy-error
+   dialog. `log.txt` logs `[file] announced/serving/pulling` on each side.
+
+- Directories are skipped in v1 (files only). One transfer at a time.
 
 ### Run-on-startup installer checkbox (Step 13)
 
