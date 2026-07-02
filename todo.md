@@ -5,28 +5,36 @@ is not yet built** — as each item lands, delete it from here.
 
 ## Status
 
-- Native C++ only, **624 checks green**, Windows + macOS CI green. Implemented + unit-tested:
-  all core logic + crypto (AES-256-GCM / ECDH P-256 / SHA / HMAC / HKDF / base64, KAT-verified),
-  pairing, the full protocol/codec layer, the **mesh coordination brain** (`app/MeshNode`:
-  N-peer switch broadcast, coordinator election/failover, heartbeat fail-safe, clipboard sync,
-  input forwarding) with a 3-node headless e2e, and the file-transfer session. **Both** the
-  Windows (Shell_NotifyIcon) and macOS (NSStatusBar) builds are real tray apps, with MeshNode
-  wired into the Windows tray (menu-switch, clipboard, injection, heartbeat pump). The WS
-  transport has client + server/listener sides. All Windows + macOS platform backends compile
-  on their CI runners.
-- Remaining: TLS-wrap the transport (Schannel), the network connection-management thread
-  (connect/accept feeding MeshNode), OS file-promise (IStream / NSFilePromiseProvider), the
-  macOS hotkey/picker, and hardware / two-machine / macOS validation.
+- Native C++ only (product), **799 checks green**, Windows + macOS CI green at every commit.
+- **The entire data plane is validated over real TCP** by a two-container Docker rig
+  (`tests/docker/`, run `pwsh tests/docker/run.ps1`): (1) ECDH numeric-comparison **pairing** →
+  both nodes derive the same 6-digit code + PSK; (2) **encrypted input** — secure link →
+  coordinator election → ownership switch → a forwarded keystroke decrypted + injected; (3)
+  **file transfer** — a 500 KB file chunked → reassembled by offset → byte-verified. All exercise
+  the SAME product logic (secure_link → ConnectionService/ConnectionManager → MeshNode →
+  EncryptedTransport / FileChannel) over the real POSIX WS transport.
+- Implemented + unit-tested: all core logic + crypto (AES-256-GCM / ECDH P-256 / SHA / HMAC /
+  HKDF / base64, KAT-verified), pairing + secure-link handshake, the protocol/codec layer, the
+  mesh brain (N-peer switch, coordinator failover, heartbeat fail-safe, clipboard sync, input
+  forwarding, one-time drop/return/unavailable/version toasts), `ConnectionService`, the
+  file-transfer session + `FileChannel`, WoL `WakeFlow`, and the config store. Both Windows
+  (Shell_NotifyIcon) and macOS (NSStatusBar) are real tray apps; the Windows tray has the mesh,
+  hotkey+fallback, picker, clipboard, WoL, an opt-in run-on-startup toggle, and a working Settings
+  item; macOS has the Carbon hotkey + NSPanel picker. Client+server WS transport on Windows; POSIX
+  WS transport for macOS/Linux.
+- Remaining items all need real hardware (two Windows machines, a Mac desktop, or Explorer/Finder)
+  to build correctly _and_ validate — see below.
 
 ---
 
-## VERY IMPORTANT — native C++ only
+## VERY IMPORTANT — native C++ only (product); OpenSSL only in the Linux test rig
 
-Every item below must be built with **native, system-provided C++ APIs only** — Win32,
-WinSock2, CNG/BCrypt, Schannel, Core Graphics, AppKit, CommonCrypto, Security.framework,
-BSD sockets, and the C++ standard library. **No third-party dependencies** (no Boost, no
-OpenSSL, no Qt, no JSON/networking/crypto library). If any task seems to "need" a library,
-re-check against [spec.md](spec.md) §16 — the native path exists for all of it.
+Every SHIPPED item must use **native, system-provided C++ APIs only** — Win32, WinSock2,
+CNG/BCrypt, Schannel, Core Graphics, AppKit, CommonCrypto, Security.framework, BSD sockets, and
+the C++ standard library. **No third-party dependencies in the product** (spec §16). The ONE
+exception is `src/platform/crypto_posix.cpp` + `tools/net*.cpp`: they link OpenSSL, but they are
+the Linux two-container TEST RIG only (`tests/docker/`) and are never compiled into the
+Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branches).
 
 ---
 
@@ -34,14 +42,9 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 4 — Input channel: transport finish (§5)
 
-- [ ] TLS-wrap (Schannel) the (done) client + server WebSocket transport for full `wss://`.
-- [x] Milestone: two real machines forwarding encrypted input end-to-end. **VALIDATED** via a
-      two-container Docker rig (tests/docker/): two isolated Linux nodes connect over real
-      TCP/WebSocket, run the clear-id-hint -> per-device-PSK -> AES-256-GCM secure link, do the
-      encrypted peer-hello handshake, elect a coordinator, switch input ownership, and forward
-      a keystroke that the sink decrypts + injects (RESULT PASS). Exercises the SAME product
-      logic (secure_link -> ConnectionManager -> MeshNode -> EncryptedTransport) over a real
-      POSIX WS transport (`platform/ws_transport_posix.cpp`, which is also the macOS transport).
+- [ ] TLS-wrap (Schannel) the client + server WebSocket transport for full `wss://`. Lower
+      priority / defense-in-depth: message payloads are already AES-256-GCM sealed end-to-end by
+      the app-layer `EncryptedTransport` (Docker-proven), so TLS is not the security gate.
 
 ### Step 9 — Peer mesh: remaining
 
@@ -61,13 +64,14 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
       `CFSTR_FILECONTENTS` (`IStream::Read` pulls bytes on paste) over the (done) file session;
       multi-file; native Explorer progress + error UI (§9.1).
 - [ ] `platform/filepromise_mac.mm` — `NSFilePromiseProvider`; native Finder progress (§9.2).
-- [ ] `net/ws_file_channel` glue — open the on-demand file transport per transfer (WS
-      client to `/files` + session token) and hand it to the (done, tested)
-      `net/FileChannel` driver, which streams FilePromiseMeta + FileChunks and reassembles
-      by offset over any Transport (multi-file + zero-byte + partial-delivery e2e-tested).
-      Bidirectional (§9.3).
+- [ ] On-paste socket-open glue: open the dedicated `/files` WS connection (+ session token)
+      when a promised paste/drop happens, and hand it to the (done) `net/FileChannel` driver.
+      The FileChannel byte path (FilePromiseMeta + chunked FileChunks, reassembled by offset;
+      multi-file/zero-byte/partial-delivery unit-tested) is **validated over real TCP** by the
+      two-container rig (`tools/netfile` transfers a 500 KB file, byte-verified). Only the OS
+      delay-render trigger + connection-open remain, and they need Explorer/Finder to test.
 
-### Step 11 — WoL / lock-unlock finish (§12, §14)
+### Step 11 — Lock/unlock finish (§14)
 
 - [ ] Unlock = switch-then-type only; **verify Secure Desktop / `LogonUI` behavior on a real
       locked machine** (open question). (lock_win/lock_mac, autostart_win/mac: done. WoL
@@ -86,22 +90,9 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ---
 
-## Tests — 100% coverage (all steps)
-
-- [~] **735 checks**, native harness: all core logic, crypto (KAT + OpenSSL cross-check),
-  pairing, session token, WS handshake/framing/assembler, message + ownership + file codecs,
-  file session, WoL, beacon, discovery table, heartbeat, input pipeline, hotkey, menu model,
-  config, key_translation. Extend as new pure logic lands.
-- [~] Headless e2e through the real Transport (loopback): a 2-node full flow AND a 3-node mesh
-  (switch broadcast, coordinator failover/failback, input forward, clipboard loop-prevent,
-  owner-drop fail-safe, version reject). Extend with file transfer + TLS as those land.
-- [~] Windows + macOS CI green at every step (735/735).
-
----
-
 ## Do NOT build (spec §1 non-goals — listed so they aren't accidentally added)
 
-- Linux support (any form).
+- Linux support in the PRODUCT (the Linux build is a TEST RIG only, never shipped).
 - Edge-of-screen crossing as a primary/load-bearing switch trigger.
 - Remote desktop, screen streaming, video capture.
 - A Bluetooth backend now (keep only the `transport.h` abstraction).

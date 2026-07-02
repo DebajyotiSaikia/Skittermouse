@@ -6,14 +6,36 @@ services:
   fnodeb:
     image: skittermouse-netcheck
     entrypoint: ["/src/build/netfile"]
-    command: ["--role","receiver","--listen","9000","--size","500000","--seconds","40"]
+    command:
+      [
+        "--role",
+        "receiver",
+        "--listen",
+        "9000",
+        "--size",
+        "500000",
+        "--seconds",
+        "40",
+      ]
     networks: [smnet]
 
   fnodea:
     image: skittermouse-netcheck
     depends_on: [fnodeb]
     entrypoint: ["/src/build/netfile"]
-    command: ["--role","sender","--listen","9001","--connect","fnodeb:9000","--size","500000","--seconds","40"]
+    command:
+      [
+        "--role",
+        "sender",
+        "--listen",
+        "9001",
+        "--connect",
+        "fnodeb:9000",
+        "--size",
+        "500000",
+        "--seconds",
+        "40",
+      ]
     networks: [smnet]
 
 networks:
