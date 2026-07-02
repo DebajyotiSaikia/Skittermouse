@@ -227,9 +227,19 @@ int runTrayApp() {
     SetTimer(hwnd, 1, 50, nullptr); // pump the mesh: heartbeats + incoming messages
 
     // Global hotkey from config (spec 4.1). MOD_NOREPEAT avoids auto-repeat storms.
+    // If the configured combo is already owned by another process, RegisterHotKey
+    // fails loudly -- fall back to a secondary combo and surface it in the tooltip.
     auto hk = sm::core::parseHotkey(app.config.settings.hotkey);
-    if (hk.valid) {
-        RegisterHotKey(hwnd, kHotkeyId, hk.modifiers | MOD_NOREPEAT, hk.key);
+    bool hkOk = hk.valid && RegisterHotKey(hwnd, kHotkeyId, hk.modifiers | MOD_NOREPEAT, hk.key);
+    if (!hkOk) {
+        auto fb = sm::core::parseHotkey("Ctrl+Shift+Alt+Space");
+        hkOk = fb.valid && RegisterHotKey(hwnd, kHotkeyId, fb.modifiers | MOD_NOREPEAT, fb.key);
+        if (hkOk) {
+            NOTIFYICONDATAW tip = app.nid;
+            tip.uFlags = NIF_TIP;
+            wcscpy_s(tip.szTip, L"Skittermouse (hotkey: Ctrl+Shift+Alt+Space)");
+            Shell_NotifyIconW(NIM_MODIFY, &tip);
+        }
     }
 
     MSG msg;
