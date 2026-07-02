@@ -5,7 +5,13 @@ is not yet built** — as each item lands, delete it from here.
 
 ## Status
 
-- Native C++ only (product), **799 checks green**, Windows + macOS CI green at every commit.
+- Native C++ only (product), **837 checks green**, Windows + macOS CI green at every commit.
+- **The full app loop is validated headlessly in-process** by the mocked-systems e2e set
+  (`tests/e2e_full_system_tests.cpp` + `tests/mock_systems.h`): every OS boundary is faked
+  (MockInjector, MockClipboard, an in-process network Switchboard) so pairing → stored PSK →
+  ConnectionService dial/accept → AES-256-GCM secure link → mesh switch → forwarded input reaching
+  the injector → clipboard sync all run in one process. The mocks live ONLY in `tests/`, never in
+  the product exe.
 - **The entire data plane is validated over real TCP** by a two-container Docker rig
   (`tests/docker/`, run `pwsh tests/docker/run.ps1`): (1) ECDH numeric-comparison **pairing** →
   both nodes derive the same 6-digit code + PSK; (2) **encrypted input** — secure link →
@@ -19,9 +25,10 @@ is not yet built** — as each item lands, delete it from here.
   forwarding, one-time drop/return/unavailable/version toasts), `ConnectionService`, the
   file-transfer session + `FileChannel`, WoL `WakeFlow`, and the config store. Both Windows
   (Shell_NotifyIcon) and macOS (NSStatusBar) are real tray apps; the Windows tray has the mesh,
-  hotkey+fallback, picker, clipboard, WoL, an opt-in run-on-startup toggle, and a working Settings
-  item; macOS has the Carbon hotkey + NSPanel picker. Client+server WS transport on Windows; POSIX
-  WS transport for macOS/Linux.
+  hotkey+fallback, picker, clipboard, WoL, an opt-in run-on-startup toggle, a working Settings
+  item, **auto-discovery pairing** (LAN beacon → pick device by name+IP, no manual IP typing), and
+  a **file debug log** (`%APPDATA%\Skittermouse\log.txt`); macOS has the Carbon hotkey + NSPanel
+  picker. **Windows WS transport is now wss (Schannel TLS)**; POSIX WS transport for macOS/Linux.
 - Remaining items all need real hardware (two Windows machines, a Mac desktop, or Explorer/Finder)
   to build correctly _and_ validate — see below.
 
@@ -46,12 +53,11 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
       ephemeral self-signed cert, encryption-only — the PSK secure link stays the trust gate), and
       the two-container Docker rig now runs the FULL stack (pairing + encrypted input + file
       transfer) over TLS, all PASS. (TCP → TLS → WebSocket → app-layer AES-256-GCM.)
-- [ ] `platform/ws_transport_win.cpp` — **Schannel** TLS to make the Windows product wss too
-      (mirrors the validated POSIX/OpenSSL structure: SSPI handshake loop, EncryptMessage/
-      DecryptMessage stream I/O, self-signed server cert). secur32/crypt32 already linked.
-      **Blind-untestable here** — needs the two-Windows-machine loop to debug SSPI edge cases;
-      see Manual validation. (Until then, Windows↔Windows runs plain ws + app-layer AES-GCM,
-      which is already encrypted + protocol-proven.)
+- [x] `platform/ws_transport_win.cpp` — **Schannel** TLS: the Windows product is now wss too
+      (SSPI handshake loop, EncryptMessage/DecryptMessage stream I/O, ephemeral self-signed server
+      cert via CryptoAPI, encryption-only). Compiles + links (secur32/crypt32); the WS handshake +
+      frames ride over TLS. Runtime SSPI edge cases still want the two-Windows-machine loop to
+      shake out — the `[tls]` lines in `%APPDATA%\Skittermouse\log.txt` are there for that.
 - [ ] macOS: TLS via Security.framework / Network.framework once the macOS transport lands.
 
 ### Step 9 — Peer mesh: macOS connection thread
@@ -60,9 +66,11 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
       the (written) POSIX transport, plus an "Add device" pairing flow. The **Windows tray is
       done**: a background I/O thread dials paired peers (bounded connect timeout) + accepts
       inbound on port 47800, runs the secure link off the UI thread, and hands sealed links to
-      the UI thread (mesh stays single-threaded); "Add device" runs the ECDH numeric-comparison
-      (`PairingExchange` + confirm dialog) on port 47801 and stores the PSK in an
-      encrypted-at-rest keystore. Runtime check is in Manual validation below.
+      the UI thread (mesh stays single-threaded); **"Add device" is auto-discovery** — a LAN
+      presence beacon (broadcast + listen on UDP 47802) feeds a live picker where the user selects
+      the target by name + IP (no manual IP typing), then the ECDH numeric-comparison
+      (`PairingExchange` + confirm dialog, port 47801) stores the PSK in an encrypted-at-rest
+      keystore. Runtime check is in Manual validation below.
 
 ### Step 10 — File transfer: OS delay-render (§9)
 
@@ -103,15 +111,19 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 ### Two Windows machines — pair, connect, forward input (Step 9, built)
 
 1. Install the same nightly on both PCs; both show the tray icon.
-2. Same LAN; allow Skittermouse through the firewall (TCP 47800 mesh + 47801 pairing) when prompted.
-3. On PC-A: tray → **Add device**, enter PC-B's IP, OK. On PC-B: tray → **Add device**, leave the
-   IP blank (it waits), OK. (Either side may enter the other's IP; the other leaves it blank.)
-4. Both show a **6-digit code** — confirm they MATCH and click Yes on both → toast "Paired with …".
-5. Within a few seconds → toast "Connected to <PC>"; the peer appears in the tray menu.
-6. Click the peer (or hotkey → pick it) to switch input, then type/move → it appears on the other
+2. Same LAN; allow Skittermouse through the firewall (TCP 47800 mesh + 47801 pairing, UDP 47802
+   discovery) when prompted.
+3. On BOTH PCs: tray → **Add device**. Each PC broadcasts its presence and shows a live list of the
+   other devices it finds (name + IP).
+4. On ONE PC, select the other from the list → **Pair**. (The other PC just needs its Add-device
+   window open; it accepts automatically.)
+5. Both show a **6-digit code** — confirm they MATCH and click Yes on both → toast "Paired with …".
+6. Within a few seconds → toast "Connected to <PC>"; the peer appears in the tray menu.
+7. Click the peer (or hotkey → pick it) to switch input, then type/move → it appears on the other
    PC; switch back with the hotkey/menu. (This is exactly the flow the Docker rig proves headless.)
 
-- Not connecting? Check the firewall, the IP, and that both PCs run the same build.
+- Not connecting? Check the firewall, that both are on the same LAN, and that both run the same
+  build. The `%APPDATA%\Skittermouse\log.txt` file logs each dial/accept/pair/TLS step.
 
 ### Run-on-startup installer checkbox (Step 13)
 

@@ -26,6 +26,7 @@ void run_e2e_flow_tests();
 void run_e2e_meshnode_tests();
 void run_e2e_encrypted_mesh_tests();
 void run_e2e_secure_connection_tests();
+void run_e2e_full_system_tests();
 
 int main() {
     run_event_types_tests();
@@ -54,6 +55,7 @@ int main() {
     run_e2e_meshnode_tests();
     run_e2e_encrypted_mesh_tests();
     run_e2e_secure_connection_tests();
+    run_e2e_full_system_tests();
 
     std::printf("\n%d checks, %d failure(s)\n", smtest::g_checks, smtest::g_failures);
     return smtest::g_failures == 0 ? 0 : 1;
