@@ -19,6 +19,7 @@
 #include "platform/injector.h"
 #include "ui/menu_model.h"
 #include "ui/picker_window.h"
+#include "ui/settings_window.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -123,18 +124,24 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             if (id == kIdQuit) {
                 PostQuitMessage(0);
             } else if (id == kIdSettings) {
-                // Settings is the flat-file config (spec 16). Create it if missing,
-                // then open it in the default text editor; changes apply on next
-                // launch. (Previously this menu item had no handler and did nothing.)
-                std::string path = configPath();
-                if (!path.empty()) {
-                    std::wstring wpath = toWide(path);
-                    if (GetFileAttributesW(wpath.c_str()) == INVALID_FILE_ATTRIBUTES)
-                        g_app->config.saveToFile(path);
-                    ShellExecuteW(hwnd, L"open", wpath.c_str(), nullptr, nullptr,
-                                  SW_SHOWNORMAL);
-                    showToast(L"Skittermouse",
-                              L"Edit the config, then restart Skittermouse to apply.");
+                // Native settings window (spec 10/16) -- replaces opening the raw
+                // config file. On Save, persist and apply run-on-startup immediately
+                // (the hotkey re-registers on next launch).
+                const bool wasStartup = g_app->config.settings.run_on_startup;
+                if (sm::ui::showSettingsWindow(g_app->config)) {
+                    std::string path = configPath();
+                    if (!path.empty()) g_app->config.saveToFile(path);
+                    const bool nowStartup = g_app->config.settings.run_on_startup;
+                    if (nowStartup != wasStartup) {
+                        const bool ok = nowStartup ? enableAutostart() : disableAutostart();
+                        if (!ok) {
+                            g_app->config.settings.run_on_startup = wasStartup; // revert
+                            if (!path.empty()) g_app->config.saveToFile(path);
+                            showToast(L"Skittermouse",
+                                      L"Startup change needs administrator approval.");
+                        }
+                    }
+                    showToast(L"Skittermouse", L"Settings saved (hotkey applies after restart).");
                 }
             } else if (id == kIdStartup) {
                 // Opt-in auto-start (spec 13), OFF by default so a reboot always

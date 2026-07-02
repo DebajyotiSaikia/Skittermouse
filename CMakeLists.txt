@@ -74,6 +74,7 @@ if(WIN32)
         src/platform/autostart_win.cpp    # Section 13: Task Scheduler, elevated
         src/platform/tray_win.cpp         # Section 10: Shell_NotifyIcon tray app shell
         src/ui/picker_window_win.cpp      # Section 4.2: hotkey-triggered machine picker
+        src/ui/settings_window_win.cpp    # Section 10: native settings window
         src/platform/wol_diag_win.cpp     # Section 12: powercfg WoL self-diagnosis
         src/pairing/pairing_dialog_win.cpp # Section 7.1: numeric-comparison confirm dialog
         # ... added as sections land
