@@ -10,6 +10,7 @@ void run_pairing_tests();
 void run_session_token_tests();
 void run_net_tests();
 void run_transport_tests();
+void run_encrypted_transport_tests();
 void run_input_logic_tests();
 void run_app_logic_tests();
 void run_feature_tests();
@@ -29,6 +30,7 @@ int main() {
     run_session_token_tests();
     run_net_tests();
     run_transport_tests();
+    run_encrypted_transport_tests();
     run_input_logic_tests();
     run_app_logic_tests();
     run_feature_tests();

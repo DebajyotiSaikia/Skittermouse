@@ -10,6 +10,7 @@ add_executable(skittermouse_tests
     session_token_tests.cpp
     net_tests.cpp
     transport_tests.cpp
+    encrypted_transport_tests.cpp
     input_logic_tests.cpp
     app_logic_tests.cpp
     feature_tests.cpp
