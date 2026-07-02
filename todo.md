@@ -41,12 +41,6 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
       WS handshake/framing/assembler, **client + server** transport, message codec, MeshNode
       routing wired into the tray, 3-node loopback e2e: done.)
 
-### Step 5 — Switching UX finish (§4)
-
-- [ ] Fallback-combo path if `RegisterHotKey` fails (surface the active combo in the tray).
-      (hotkey parser, menu model, tray shell, hotkey registration, tray menu → switch,
-      hotkey-triggered picker window, owner-change toast: done.)
-
 ### Step 6 — macOS Cocoa UI parity (§4, §10)
 
 - [ ] `platform/hotkey_mac.mm` — `RegisterEventHotKey` / filtering `CGEventTap` (§4.1).
