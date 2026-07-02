@@ -114,7 +114,7 @@ target_link_libraries(skittermouse_platform PUBLIC skittermouse_core)
 if(WIN32)
     # All native, zero third-party (Section 16): bcrypt now (Sections 5.4/7); later
     # ws2_32 (Sections 5/6), shell/comctl (Section 10), etc.
-    target_link_libraries(skittermouse_platform PUBLIC bcrypt ws2_32 user32 shell32)
+    target_link_libraries(skittermouse_platform PUBLIC bcrypt ws2_32 user32 shell32 secur32 crypt32)
 elseif(APPLE)
     target_link_libraries(skittermouse_platform PUBLIC
         "-framework Security" "-framework CoreFoundation" "-framework CoreGraphics"

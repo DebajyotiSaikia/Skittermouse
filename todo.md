@@ -40,11 +40,19 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 
 ## By build order (spec §17)
 
-### Step 4 — Input channel: transport finish (§5)
+### Step 4 — Input channel: TLS / wss (§5)
 
-- [ ] TLS-wrap (Schannel) the client + server WebSocket transport for full `wss://`. Lower
-      priority / defense-in-depth: message payloads are already AES-256-GCM sealed end-to-end by
-      the app-layer `EncryptedTransport` (Docker-proven), so TLS is not the security gate.
+- [x] **wss PROVEN end-to-end**: the POSIX WS transport does a real TLS handshake (OpenSSL,
+      ephemeral self-signed cert, encryption-only — the PSK secure link stays the trust gate), and
+      the two-container Docker rig now runs the FULL stack (pairing + encrypted input + file
+      transfer) over TLS, all PASS. (TCP → TLS → WebSocket → app-layer AES-256-GCM.)
+- [ ] `platform/ws_transport_win.cpp` — **Schannel** TLS to make the Windows product wss too
+      (mirrors the validated POSIX/OpenSSL structure: SSPI handshake loop, EncryptMessage/
+      DecryptMessage stream I/O, self-signed server cert). secur32/crypt32 already linked.
+      **Blind-untestable here** — needs the two-Windows-machine loop to debug SSPI edge cases;
+      see Manual validation. (Until then, Windows↔Windows runs plain ws + app-layer AES-GCM,
+      which is already encrypted + protocol-proven.)
+- [ ] macOS: TLS via Security.framework / Network.framework once the macOS transport lands.
 
 ### Step 9 — Peer mesh: macOS connection thread
 
