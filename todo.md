@@ -5,17 +5,18 @@ is not yet built** — as each item lands, delete it from here.
 
 ## Status
 
-- Native C++ only, **619 checks green**, Windows + macOS CI green. Implemented + unit-tested:
+- Native C++ only, **624 checks green**, Windows + macOS CI green. Implemented + unit-tested:
   all core logic + crypto (AES-256-GCM / ECDH P-256 / SHA / HMAC / HKDF / base64, KAT-verified),
   pairing, the full protocol/codec layer, the **mesh coordination brain** (`app/MeshNode`:
   N-peer switch broadcast, coordinator election/failover, heartbeat fail-safe, clipboard sync,
-  input forwarding) with a 3-node headless e2e, and the file-transfer session. The Windows
-  build is a **real tray app**. Windows platform (capture/inject/WS transport/clipboard/lock/
-  autostart/wol-diag/pairing-dialog) and the macOS backends (crypto/capture/inject/clipboard/
-  lock/autostart/pairing-dialog) all compile on their CI runners.
-- Remaining: the transport's TLS wrap + listener side, the picker/tray-menu switch wiring, the
-  macOS Cocoa UI (tray/hotkey/picker), OS file-promise (IStream / NSFilePromiseProvider),
-  wiring MeshNode onto real sockets, and hardware / two-machine / macOS validation.
+  input forwarding) with a 3-node headless e2e, and the file-transfer session. **Both** the
+  Windows (Shell_NotifyIcon) and macOS (NSStatusBar) builds are real tray apps, with MeshNode
+  wired into the Windows tray (menu-switch, clipboard, injection, heartbeat pump). The WS
+  transport has client + server/listener sides. All Windows + macOS platform backends compile
+  on their CI runners.
+- Remaining: TLS-wrap the transport (Schannel), the picker window, the network connection-
+  management thread (connect/accept feeding MeshNode), OS file-promise (IStream /
+  NSFilePromiseProvider), macOS hotkey/picker, and hardware / two-machine / macOS validation.
 
 ---
 
@@ -33,37 +34,34 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 4 — Input channel: transport finish (§5)
 
-- [ ] TLS-wrap (Schannel) the (done) TCP+WebSocket client transport for full `wss://`, and add
-      the server/listener side (accept + server handshake); differentiate `/input` vs `/files`.
-- [ ] `net/ws_input_channel` — persistent channel with AES-256-GCM per message
-      (strictly-incrementing nonce) over the transport; wire `MeshNode` onto it.
+- [ ] TLS-wrap (Schannel) the (done) client + server WebSocket transport for full `wss://`.
+- [ ] AES-256-GCM per message (strictly-incrementing nonce) as a `Transport` decorator so
+      MeshNode traffic is sealed on the wire.
 - [ ] Milestone: two real machines forwarding encrypted input end-to-end. (transport interface,
-      WS handshake/framing/assembler, client transport, message codec, MeshNode routing,
-      3-node loopback e2e: done.)
+      WS handshake/framing/assembler, **client + server** transport, message codec, MeshNode
+      routing wired into the tray, 3-node loopback e2e: done.)
 
 ### Step 5 — Switching UX finish (§4, §10)
 
-- [ ] Wire the tray menu's per-device click + `WM_HOTKEY` to `MeshNode::requestSwitchTo` once
-      the mesh is connected; add the fallback-combo path if `RegisterHotKey` fails.
 - [ ] `ui/picker_window_win.cpp` — topmost focus-stealing list over the (done) `ui/menu_model`;
       Up/Down/Enter/Esc; local keyboard hook while open; offline greyed; clean dismiss (§4.2).
+- [ ] `WM_HOTKEY` opens the picker; fallback-combo path if `RegisterHotKey` fails.
 - [ ] `ui/toast_notify` — connection/transfer status notifications (§15).
-      (hotkey parser, menu model, tray shell, hotkey registration: done.)
+      (hotkey parser, menu model, tray shell, hotkey registration, tray menu → switch: done.)
 
 ### Step 6 — macOS Cocoa UI parity (§4, §10)
 
 - [ ] `platform/hotkey_mac.mm` — `RegisterEventHotKey` / filtering `CGEventTap` (§4.1).
 - [ ] `ui/picker_window_mac.mm` — topmost key-focus-stealing NSPanel (§4.2).
-- [ ] `platform/tray_mac.mm` — `NSStatusBar` status item + menu (§10); the macOS app main().
-      (macOS crypto/capture/inject/clipboard/lock/autostart/pairing-dialog: done and compiling.)
+      (macOS tray shell (NSStatusBar) + app main + crypto/capture/inject/clipboard/lock/
+      autostart/pairing-dialog: done and compiling on CI.)
 
-### Step 9 — Peer mesh: remaining (§11.4)
+### Step 9 — Peer mesh: remaining
 
-- [ ] `core/config` layout config — monitor-level spatial arrangement, forward-compat data
-      only, **no** edge-crossing.
-- [ ] Wire `MeshNode` into the app with real per-peer transports (connect/accept on pairing).
-      (N-peer ownership broadcast, over-the-wire race resolution, coordinator election/
-      failover/failback, priority list: done and e2e-tested.)
+- [ ] Connection management: connect to each paired peer + accept incoming (the WS client +
+      server transport is done) on a network thread feeding the (done, tray-wired) `MeshNode`.
+      (config layout, N-peer ownership broadcast, race resolution, coordinator election/
+      failover/failback, priority list, MeshNode wired into the tray app: done.)
 
 ### Step 10 — File transfer: OS delay-render (§9)
 
