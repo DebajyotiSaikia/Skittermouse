@@ -9,14 +9,32 @@
 #include "platform/global_hotkey.h"
 #include "ui/menu_model.h"
 #include "ui/picker_window.h"
+#include "ui/settings_window.h"
 
 #import <AppKit/AppKit.h>
 
 #include <string>
 
+namespace {
+std::string macConfigPath() {
+    NSArray<NSString*>* dirs = NSSearchPathForDirectoriesInDomains(
+        NSApplicationSupportDirectory, NSUserDomainMask, YES);
+    NSString* base = dirs.firstObject ?: NSTemporaryDirectory();
+    NSString* dir = [base stringByAppendingPathComponent:@"Skittermouse"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+    NSString* path = [dir stringByAppendingPathComponent:@"config.txt"];
+    const char* c = [path UTF8String];
+    return c ? std::string(c) : std::string();
+}
+} // namespace
+
 @interface SMTrayDelegate : NSObject <NSApplicationDelegate>
 @property(strong) NSStatusItem* statusItem;
 - (void)openPicker;
+- (void)openSettings;
 @end
 
 @implementation SMTrayDelegate
@@ -48,6 +66,11 @@
         }
     }
     [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* settings = [[NSMenuItem alloc] initWithTitle:@"Settings\u2026"
+                                                      action:@selector(openSettings:)
+                                               keyEquivalent:@","];
+    settings.target = self;
+    [menu addItem:settings];
     NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:@"Quit Skittermouse"
                                                   action:@selector(quit:)
                                            keyEquivalent:@"q"];
@@ -77,6 +100,14 @@
     if (!chosen.empty()) {
         NSString* title = [NSString stringWithUTF8String:chosen.c_str()];
         self.statusItem.button.title = title ? title : @"Skittermouse";
+    }
+}
+
+- (void)openSettings {
+    const std::string path = macConfigPath();
+    sm::core::Config config = sm::core::Config::loadFromFile(path);
+    if (sm::ui::showSettingsWindow(config) && !path.empty()) {
+        config.saveToFile(path);
     }
 }
 

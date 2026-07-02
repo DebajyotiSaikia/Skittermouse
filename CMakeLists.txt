@@ -91,6 +91,7 @@ elseif(APPLE)
         src/platform/tray_mac.mm          # Section 10: NSStatusBar tray app shell
         src/platform/hotkey_mac.mm        # Section 4.1: Carbon RegisterEventHotKey global hotkey
         src/ui/picker_window_mac.mm       # Section 4.2: topmost NSPanel machine picker
+        src/ui/settings_window_mac.mm     # Section 10: native settings window
         src/pairing/pairing_dialog_mac.mm # Section 7.1: NSAlert confirm dialog
     )
 else()
