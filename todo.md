@@ -5,18 +5,15 @@ is not yet built** — as each item lands, delete it from here.
 
 ## Status
 
-- Foundation + app-logic landed and unit-tested (native C++ only, **533 checks green**,
-  Windows + macOS CI green): core logic (config, key_translation, ownership, election,
-  stuck-key tracker, clipboard loop-prevention, heartbeat fail-safe, input pipeline), crypto
-  (AES-256-GCM + ECDH P-256 + SHA-256/SHA-1/HMAC/HKDF/base64, KAT-verified), pairing (ECDH
-  handshake, 6-digit code, encrypted key store), net (WS handshake + framing + assembler,
-  version-checked message codec, session token, WoL, discovery beacon + table), and a headless
-  e2e flow through the real Transport (loopback). Windows capture/injection, TCP+WebSocket
-  client transport, and screen-lock compile.
-- Remaining: TLS-wrap + listener for the transport, the switching UX (hotkey/picker/tray), OS
-  clipboard/file-promise/autostart/wol-diag glue, all macOS `.mm` backends, the real
-  `main.cpp` app wiring, and hardware / two-machine / macOS validation.
-- The shipped app is still a console stub — the subsystems above aren't wired into a UI yet.
+- Foundation + app-logic + Windows app shell landed and unit-tested (native C++ only,
+  **569 checks green**, Windows + macOS CI green). The Windows build is now a **real tray
+  application** (Shell_NotifyIcon icon + menu, global hotkey, clipboard listener), not a
+  console stub. Pure logic, crypto, protocol, and transport pieces are all tested; the WS
+  client transport, capture/injection, clipboard, autostart, lock, and discovery sockets
+  compile.
+- Remaining: TLS-wrap + listener for the transport, the picker window, wiring capture/mesh/
+  pairing behind the tray shell, OS file-promise/wol-diag glue, all macOS `.mm` backends,
+  and hardware / two-machine / macOS validation.
 
 ---
 
@@ -54,15 +51,13 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 5 — Switching UX (§4, §10, §15)
 
-- [ ] `platform/hotkey_win.cpp` — `RegisterHotKey` using the (done) `core/hotkey` parser
-      (default `Ctrl+Alt+Space`), loud-fail → fallback combo, surface active combo (§4.1).
+- [ ] Wire the (done) tray app's per-device menu click + `WM_HOTKEY` to real switch actions
+      once the mesh is connected; add the fallback-combo path if `RegisterHotKey` fails (§4.1).
 - [ ] `ui/picker_window_win.cpp` — topmost focus-stealing list over the (done) `ui/menu_model`;
       Up/Down/Enter/Esc; local keyboard hook while open; offline greyed; clean dismiss (§4.2).
-- [ ] `platform/tray_win.cpp` + `ui/tray_menu.h/.cpp` — `Shell_NotifyIcon` over the (done)
-      `ui/menu_model`; owner marked; online/offline; Connect…/Add device/settings (§10, §4.3).
 - [ ] Apply `key_translation` at injection when target OS differs (§4.5). (remap table: done.)
 - [ ] `ui/toast_notify.h/.cpp` — connection/transfer status notifications (§15).
-- [ ] Turn `main.cpp` into the real app: WIN32 subsystem, message loop, subsystem wiring, config load.
+      (Tray app shell — window/message loop, tray icon+menu, hotkey, clipboard listener — done.)
 
 ### Step 6 — Second platform (macOS) parity
 
@@ -82,10 +77,11 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 8 — Clipboard sync (§8)
 
-- [ ] Wire `AddClipboardFormatListener` / `WM_CLIPBOARDUPDATE` (needs the app window) to the
-      (done) `clipboard_win` get/set + `core/clipboard_sync` loop-prevention.
+- [ ] Broadcast local clipboard changes to peers (the tray app already listens via
+      `AddClipboardFormatListener`, applies the exclusion check, and runs loop-prevention —
+      it just needs a connected mesh to send to).
 - [ ] `platform/clipboard_mac.mm` — poll `NSPasteboard.changeCount` 200–500 ms.
-      (Windows CF_UNICODETEXT read/write + password-manager exclusion check: done.)
+      (Windows listener + CF_UNICODETEXT read/write + password-manager exclusion: done.)
 
 ### Step 9 — Peer mesh, generalized to N (§2.1, §11)
 
