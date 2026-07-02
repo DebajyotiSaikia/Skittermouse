@@ -12,8 +12,8 @@
 // injects them and prints "RESULT PASS" on the first forwarded key it receives.
 
 #include "app/connection_manager.h"
+#include "app/connection_service.h"
 #include "app/mesh_node.h"
-#include "app/secure_link.h"
 #include "core/event_types.h"
 #include "net/ws_transport.h"
 #include "pairing/key_store.h"
@@ -21,7 +21,6 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <memory>
 #include <string>
 #include <thread>
@@ -111,9 +110,26 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
     };
 
-    // Dialer: connect out (retry until the listener is up), then secure the link.
-    bool dialed = false;
-    std::unique_ptr<app::InboundHandshake> pending; // listener's in-flight handshake
+    // Real WS transport factories over TCP (the same code the product ships).
+    auto dial = [](const std::string& host, uint16_t port) -> std::unique_ptr<net::Transport> {
+        std::unique_ptr<net::Transport> t(net::createWsClientTransport());
+        if (t && t->connect(host, port)) return t;
+        return nullptr;
+    };
+    auto accept = [](uint16_t port, int timeoutMs) -> std::unique_ptr<net::Transport> {
+        return std::unique_ptr<net::Transport>(net::wsAcceptOne(port, timeoutMs));
+    };
+    app::ConnectionService service(cm, keys, self, listenPort, dial, accept);
+    if (!connect.empty()) {
+        std::string host = connect;
+        uint16_t port = 0;
+        auto colon = connect.rfind(':');
+        if (colon != std::string::npos) {
+            host = connect.substr(0, colon);
+            port = static_cast<uint16_t>(std::stoi(connect.substr(colon + 1)));
+        }
+        service.setPeers({{peer, host, port}});
+    }
 
     const uint64_t deadline = nowMs() + static_cast<uint64_t>(seconds) * 1000;
     bool switched = false;
@@ -125,52 +141,8 @@ int main(int argc, char** argv) {
 
     while (nowMs() < deadline) {
         const uint64_t now = nowMs();
-
-        if (role == "dialer" && !dialed && !connect.empty()) {
-            std::string host = connect;
-            uint16_t port = 0;
-            auto colon = connect.rfind(':');
-            if (colon != std::string::npos) {
-                host = connect.substr(0, colon);
-                port = static_cast<uint16_t>(std::stoi(connect.substr(colon + 1)));
-            }
-            std::unique_ptr<net::Transport> raw(net::createWsClientTransport());
-            if (raw->connect(host, port)) {
-                app::SecureLink link = app::secureOutbound(std::move(raw), keys, self, peer);
-                if (link.transport) {
-                    cm.addOutgoing(peer, std::move(link.transport));
-                    dialed = true;
-                    std::printf("EVENT dialed %s:%d\n", host.c_str(), port);
-                    std::fflush(stdout);
-                }
-            }
-        }
-
-        if (role == "listener") {
-            if (!pending) {
-                net::Transport* t = net::wsAcceptOne(listenPort, 200);
-                if (t) {
-                    pending = std::make_unique<app::InboundHandshake>(
-                        std::unique_ptr<net::Transport>(t), keys, self);
-                }
-            }
-            if (pending) {
-                auto st = pending->poll();
-                if (st == app::InboundHandshake::Status::Ok) {
-                    app::SecureLink link = pending->take();
-                    std::printf("EVENT accepted peer=%s\n", link.peerId.c_str());
-                    std::fflush(stdout);
-                    cm.addIncoming(std::move(link.transport));
-                    pending.reset();
-                } else if (st != app::InboundHandshake::Status::NeedMore) {
-                    std::printf("EVENT handshake-rejected status=%d\n", static_cast<int>(st));
-                    std::fflush(stdout);
-                    pending.reset();
-                }
-            }
-        }
-
-        cm.poll(now);
+        service.pollConnections(now, 200); // dial/accept + secure link -> ConnectionManager
+        cm.poll(now);                      // pump the mesh (heartbeats + incoming)
 
         // Dialer takes ownership and streams keystrokes once the peer is live.
         if (role == "dialer" && cm.isConnected(peer)) {
