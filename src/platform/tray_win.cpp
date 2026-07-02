@@ -14,6 +14,7 @@
 #include "core/hotkey.h"
 #include "core/wake_flow.h"
 #include "net/wol_sender.h"
+#include "platform/autostart.h"
 #include "platform/clipboard.h"
 #include "platform/injector.h"
 #include "ui/menu_model.h"
@@ -34,6 +35,7 @@ namespace {
 constexpr UINT kTrayCallback = WM_APP + 1;
 constexpr UINT kIdQuit = 40001;
 constexpr UINT kIdSettings = 40002;
+constexpr UINT kIdStartup = 40003;
 constexpr UINT kIdDeviceBase = 41000;
 constexpr int kHotkeyId = 1;
 
@@ -100,6 +102,8 @@ void showMenu(HWND hwnd) {
         }
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (isAutostartEnabled() ? MF_CHECKED : MF_UNCHECKED), kIdStartup,
+                L"Run on startup");
     AppendMenuW(menu, MF_STRING, kIdSettings, L"Settings\u2026");
     AppendMenuW(menu, MF_STRING, kIdQuit, L"Quit Skittermouse");
 
@@ -131,6 +135,23 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                                   SW_SHOWNORMAL);
                     showToast(L"Skittermouse",
                               L"Edit the config, then restart Skittermouse to apply.");
+                }
+            } else if (id == kIdStartup) {
+                // Opt-in auto-start (spec 13), OFF by default so a reboot always
+                // recovers. Enabling/disabling the elevated login task needs admin,
+                // so this prompts UAC; a declined prompt leaves the setting unchanged.
+                const bool wasEnabled = isAutostartEnabled();
+                const bool ok = wasEnabled ? disableAutostart() : enableAutostart();
+                if (ok) {
+                    g_app->config.settings.run_on_startup = !wasEnabled;
+                    std::string path = configPath();
+                    if (!path.empty()) g_app->config.saveToFile(path);
+                    showToast(L"Skittermouse", wasEnabled
+                                                   ? L"Skittermouse will no longer run on startup."
+                                                   : L"Skittermouse will run on startup.");
+                } else {
+                    showToast(L"Skittermouse",
+                              L"Startup setting unchanged (administrator approval declined).");
                 }
             } else if (id >= kIdDeviceBase && g_app->mesh) {
                 std::size_t idx = id - kIdDeviceBase;

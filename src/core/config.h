@@ -47,6 +47,8 @@ struct Settings {
     std::string hotkey = "Ctrl+Alt+Space"; // Section 4.1 default combo
     bool broadcast_presence = true;         // Section 6 discovery beacon on/off
     bool lock_propagation_optin = false;    // Section 14 lock is opt-in per machine
+    bool run_on_startup = false;            // Section 13 auto-start: OFF by default (opt-in),
+                                            // so a reboot always recovers from a bad state
 };
 
 class Config {

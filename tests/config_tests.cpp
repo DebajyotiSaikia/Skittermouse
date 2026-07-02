@@ -32,6 +32,7 @@ void run_config_tests() {
         SM_CHECK_EQ(r.settings.hotkey, std::string("Ctrl+Alt+Space"));
         SM_CHECK(r.settings.broadcast_presence);
         SM_CHECK(!r.settings.lock_propagation_optin);
+        SM_CHECK(!r.settings.run_on_startup); // auto-start OFF by default (opt-in)
         SM_CHECK(r.devices.empty());
         SM_CHECK(r.priority.empty());
         SM_CHECK(r.ineligible.empty());
@@ -43,10 +44,12 @@ void run_config_tests() {
         c.settings.hotkey = "Ctrl+Shift+Alt+Space";
         c.settings.broadcast_presence = false;
         c.settings.lock_propagation_optin = true;
+        c.settings.run_on_startup = true;
         Config r = Config::parse(c.serialize());
         SM_CHECK_EQ(r.settings.hotkey, c.settings.hotkey);
         SM_CHECK(!r.settings.broadcast_presence);
         SM_CHECK(r.settings.lock_propagation_optin);
+        SM_CHECK(r.settings.run_on_startup);
     }
 
     // --- Devices with special characters round-trip -------------------------

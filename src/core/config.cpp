@@ -134,6 +134,7 @@ std::string Config::serialize() const {
     out << "setting.hotkey=" << esc(settings.hotkey) << "\n";
     out << "setting.broadcast=" << (settings.broadcast_presence ? "1" : "0") << "\n";
     out << "setting.lock_optin=" << (settings.lock_propagation_optin ? "1" : "0") << "\n";
+    out << "setting.run_on_startup=" << (settings.run_on_startup ? "1" : "0") << "\n";
     for (const auto& d : devices) {
         out << "device=" << joinFields({d.id, d.name, d.last_ip,
                                          std::to_string(d.port), d.os,
@@ -164,6 +165,8 @@ Config Config::parse(const std::string& text) {
             c.settings.broadcast_presence = (val == "1");
         } else if (key == "setting.lock_optin") {
             c.settings.lock_propagation_optin = (val == "1");
+        } else if (key == "setting.run_on_startup") {
+            c.settings.run_on_startup = (val == "1");
         } else if (key == "device") {
             auto f = splitFields(val);
             PairedDevice d;
