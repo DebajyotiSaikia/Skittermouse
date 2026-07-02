@@ -153,6 +153,9 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 - Edge-of-screen crossing as a primary/load-bearing switch trigger.
 - Remote desktop, screen streaming, video capture.
 - A Bluetooth backend now (keep only the `transport.h` abstraction).
+
+## Evaluate the below - don't implement yet
+
 - Rich clipboard formats (images/RTF/HTML) — plain text only v1.
 - Resumable/queued file transfers — one at a time, fail cleanly.
 - Any unattended/scripted credential injection into a lock screen.

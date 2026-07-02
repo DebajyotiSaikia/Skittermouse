@@ -12,11 +12,13 @@ using sm::core::kProtocolVersion;
 namespace {
 
 bool isFixedType(MessageType t) {
+    // The genuine 12-byte hot-path messages. SwitchOwner is variable-length: it
+    // carries a full ownership claim (target/origin peer ids + sequence), which
+    // does not fit the fixed InputEvent struct, so it uses the VarHeader path.
     switch (t) {
         case MessageType::MouseMove:
         case MessageType::MouseButton:
         case MessageType::KeyEvent:
-        case MessageType::SwitchOwner:
         case MessageType::Heartbeat:
             return true;
         default:

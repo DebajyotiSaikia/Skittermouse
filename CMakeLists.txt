@@ -28,6 +28,8 @@ add_library(skittermouse_core STATIC
     src/ui/menu_model.cpp
     src/net/message_codec.cpp
     src/net/file_transfer.cpp
+    src/net/ownership_codec.cpp
+    src/app/mesh_node.cpp
 )
 target_include_directories(skittermouse_core PUBLIC src)
 target_compile_features(skittermouse_core PUBLIC cxx_std_17)

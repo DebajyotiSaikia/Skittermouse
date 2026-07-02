@@ -15,6 +15,7 @@ add_executable(skittermouse_tests
     feature_tests.cpp
     e2e_mesh_tests.cpp
     e2e_flow_tests.cpp
+    e2e_meshnode_tests.cpp
 )
 target_link_libraries(skittermouse_tests PRIVATE skittermouse_platform)
 
