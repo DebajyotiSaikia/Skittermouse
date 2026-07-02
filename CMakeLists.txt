@@ -28,6 +28,7 @@ add_library(skittermouse_core STATIC
     src/ui/menu_model.cpp
     src/net/message_codec.cpp
     src/net/file_transfer.cpp
+    src/net/file_session.cpp
     src/net/ownership_codec.cpp
     src/app/mesh_node.cpp
 )

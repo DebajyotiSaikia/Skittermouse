@@ -13,6 +13,7 @@ add_executable(skittermouse_tests
     input_logic_tests.cpp
     app_logic_tests.cpp
     feature_tests.cpp
+    file_session_tests.cpp
     e2e_mesh_tests.cpp
     e2e_flow_tests.cpp
     e2e_meshnode_tests.cpp

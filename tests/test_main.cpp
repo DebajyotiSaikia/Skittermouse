@@ -13,6 +13,7 @@ void run_transport_tests();
 void run_input_logic_tests();
 void run_app_logic_tests();
 void run_feature_tests();
+void run_file_session_tests();
 void run_e2e_mesh_tests();
 void run_e2e_flow_tests();
 void run_e2e_meshnode_tests();
@@ -31,6 +32,7 @@ int main() {
     run_input_logic_tests();
     run_app_logic_tests();
     run_feature_tests();
+    run_file_session_tests();
     run_e2e_mesh_tests();
     run_e2e_flow_tests();
     run_e2e_meshnode_tests();
