@@ -30,7 +30,9 @@ add_library(skittermouse_core STATIC
     src/net/file_transfer.cpp
     src/net/file_session.cpp
     src/net/ownership_codec.cpp
+    src/net/peer_hello.cpp
     src/app/mesh_node.cpp
+    src/app/connection_manager.cpp
 )
 target_include_directories(skittermouse_core PUBLIC src)
 target_compile_features(skittermouse_core PUBLIC cxx_std_17)

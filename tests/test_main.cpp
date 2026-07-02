@@ -13,6 +13,7 @@ void run_transport_tests();
 void run_encrypted_transport_tests();
 void run_input_logic_tests();
 void run_app_logic_tests();
+void run_connection_manager_tests();
 void run_feature_tests();
 void run_file_session_tests();
 void run_e2e_mesh_tests();
@@ -34,6 +35,7 @@ int main() {
     run_encrypted_transport_tests();
     run_input_logic_tests();
     run_app_logic_tests();
+    run_connection_manager_tests();
     run_feature_tests();
     run_file_session_tests();
     run_e2e_mesh_tests();

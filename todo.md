@@ -35,25 +35,19 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 ### Step 4 — Input channel: transport finish (§5)
 
 - [ ] TLS-wrap (Schannel) the (done) client + server WebSocket transport for full `wss://`.
-- [ ] AES-256-GCM per message (strictly-incrementing nonce) as a `Transport` decorator so
-      MeshNode traffic is sealed on the wire.
 - [ ] Milestone: two real machines forwarding encrypted input end-to-end. (transport interface,
-      WS handshake/framing/assembler, **client + server** transport, message codec, MeshNode
-      routing wired into the tray, 3-node loopback e2e: done.)
-
-### Step 6 — macOS Cocoa UI parity (§4, §10)
-
-- [ ] `platform/hotkey_mac.mm` — `RegisterEventHotKey` / filtering `CGEventTap` (§4.1).
-- [ ] `ui/picker_window_mac.mm` — topmost key-focus-stealing NSPanel (§4.2).
-      (macOS tray shell (NSStatusBar) + app main + crypto/capture/inject/clipboard/lock/
-      autostart/pairing-dialog: done and compiling on CI.)
+      WS handshake/framing/assembler, **client + server** transport, message codec, the
+      **AES-256-GCM per-message `Transport` decorator** (strict nonce counter + anti-replay,
+      3-node e2e through it), MeshNode routing wired into the tray, 3-node loopback e2e: done.)
 
 ### Step 9 — Peer mesh: remaining
 
-- [ ] Connection management: connect to each paired peer + accept incoming (the WS client +
-      server transport is done) on a network thread feeding the (done, tray-wired) `MeshNode`.
-      (config layout, N-peer ownership broadcast, race resolution, coordinator election/
-      failover/failback, priority list, MeshNode wired into the tray app: done.)
+- [ ] OS network thread: run the WS client `connect()` to each paired peer and
+      `wsAcceptOne()` for inbound sockets, handing each Transport to the (done, tested)
+      `app/ConnectionManager`. (peer-hello handshake, link identification/lifecycle, dedup,
+      disconnect reaping, mesh registration + pump via `ConnectionManager`; config layout,
+      N-peer ownership broadcast, race resolution, coordinator election/failover/failback,
+      priority list, MeshNode wired into the tray app: done.)
 
 ### Step 10 — File transfer: OS delay-render (§9)
 

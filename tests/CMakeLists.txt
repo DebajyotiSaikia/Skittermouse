@@ -13,6 +13,7 @@ add_executable(skittermouse_tests
     encrypted_transport_tests.cpp
     input_logic_tests.cpp
     app_logic_tests.cpp
+    connection_manager_tests.cpp
     feature_tests.cpp
     file_session_tests.cpp
     e2e_mesh_tests.cpp
