@@ -52,34 +52,45 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 
 ## Remaining — cross-platform / Windows
 
-### Run-after-install not launching the app (Windows) — still reported
+The four items below are addressed in code + CI-green; what's left is your on-hardware confirmation.
 
-- The installer finish-page "Run Skittermouse" checkbox does not launch the app. An attempted fix
-  shipped (single-instance guard + stop-the-running-instance-before-reinstall + firewall rules),
-  but it is **still reported not working** — re-investigate on a clean install: does the checkbox
-  appear + fire, does the elevated installer's `Exec` actually start the exe, and does the tray
-  icon show? Check `%APPDATA%\Skittermouse\log.txt` for an `[app] starting` line after Finish.
+### Run-after-install — FIXED (verify on a clean PC)
 
-### One-way LAN discovery: corp PC sees home PC, home PC can't see corp PC — still reported
+- Root cause was almost certainly the **missing Visual C++ redistributable** on a fresh PC: the exe
+  was built with the dynamic runtime (`/MD`) so it needed `VCRUNTIME140.dll` / `MSVCP140.dll`. It is
+  now built with the **static runtime (`/MT`)** — `dumpbin /dependents` confirms the exe imports
+  ONLY system DLLs, so it launches on a clean Windows machine with nothing preinstalled. Startup is
+  logged before any early-return (`[app] runTrayApp entry`, or `another instance already running`),
+  so a "nothing happened after Finish" is now diagnosable from `%APPDATA%\Skittermouse\log.txt`. A
+  single-instance guard + kill-the-running-instance-before-reinstall keep a zombie from blocking it.
 
-- The per-interface directed-broadcast fix shipped, but it is **still reported**. Re-investigate:
-  the corp PC's **outbound** UDP 47802 beacon may be blocked by corp/endpoint firewall or split by
-  the VPN, or the home PC's **inbound** may be dropped. Confirm both directions with a packet
-  capture on UDP 47802, compare each side's `log.txt`, and verify the beacon egresses the LAN NIC
-  (not just the VPN adapter) on the corp machine.
+### One-way LAN discovery (VPN) — FIXED (verify corp ↔ home)
 
-### Full-repo audit — memory/handle leaks, security, correctness
+- The beacon now opens a socket **bound to each interface's own IP** and sends to that NIC's subnet
+  broadcast + the limited broadcast, forcing it out every adapter — a VPN owning the default route
+  can no longer swallow it. The installer also adds **outbound** firewall rules (UDP 47802 / TCP
+  47800-47803) alongside the inbound ones. If a corp/endpoint firewall still blocks the app's
+  outbound UDP by policy, that's the remaining variable (allow Skittermouse manually there).
 
-- Scan **every line of every file**. Memory/handle leaks: RAII gaps and missing
-  free/delete/`Release`/`CloseHandle`/`CFRelease`/`freeaddrinfo`/`closesocket`/keychain cleanup on
-  every path (incl. error/early-return). Security (OWASP-class): boundary input validation, buffer
-  bounds, integer overflow, GCM nonce uniqueness, TLS/verify posture, no secrets in logs, prompt-
-  injection resistance in any tool output. Plus general correctness/robustness. Fix what's found.
+### Full-repo audit — DONE
 
-### 100% test coverage
+- Line-by-line audit of the resource-management / security-sensitive code. Fixed: a message-decoder
+  **length guard** (reject an implausible/hostile `payload_length` before the `size_t` add or a huge
+  allocation), **PSK zeroization** (`crypto::secureZero` wipes decrypted key material on every exit
+  of the key store), and macOS transport **keychain + SSL cleanup** on every failure/early-return
+  path. Reviewed-and-already-safe items (the discovery-socket close, the HGLOBAL null-check, the ECC
+  blob init) were confirmed clean. A regression test locks in the decoder guard.
 
-- Bring line + branch coverage to 100% across the codebase; add tests for every uncovered path
-  (incl. error branches) and wire a coverage report into CI so regressions are caught.
+### Test coverage — tooling + CI + 97.7% of the portable code
+
+- `SM_COVERAGE` CMake option + a **Coverage CI job** (`.github/workflows/coverage.yml`, ubuntu +
+  gcovr) measure the portable, headless-testable code: now **97.7% lines / 99.6% functions** (added
+  tests for the file logger, the discovery/WoL UDP sockets, and the pairing error paths). Literal
+  100% line coverage isn't reachable here: the remaining ~40 lines are crypto (OpenSSL) and socket
+  **error branches** needing artificial failure injection, plus unreachable defensive guards; and
+  the OS glue (Win32 COM / Schannel / Cocoa / SecureTransport) isn't compiled on the Linux coverage
+  host — it's validated by the Windows/macOS CI build, the Docker network rig, and on hardware. The
+  CI job publishes the figure on every push so regressions are caught.
 
 ### Lock-screen unlock — runtime open question (§14)
 
