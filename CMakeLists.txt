@@ -73,6 +73,7 @@ if(WIN32)
         src/platform/ws_transport_win.cpp # Section 5.1: TCP + WebSocket client transport
         src/platform/lock_win.cpp         # Section 14: LockWorkStation
         src/platform/clipboard_win.cpp    # Section 8: CF_UNICODETEXT + exclusion check
+        src/platform/filepromise_win.cpp  # Section 9.1: IDataObject delay-render file promise
         src/platform/autostart_win.cpp    # Section 13: Task Scheduler, elevated
         src/platform/tray_win.cpp         # Section 10: Shell_NotifyIcon tray app shell
         src/ui/picker_window_win.cpp      # Section 4.2: hotkey-triggered machine picker
@@ -115,7 +116,7 @@ target_link_libraries(skittermouse_platform PUBLIC skittermouse_core)
 if(WIN32)
     # All native, zero third-party (Section 16): bcrypt now (Sections 5.4/7); later
     # ws2_32 (Sections 5/6), shell/comctl (Section 10), etc.
-    target_link_libraries(skittermouse_platform PUBLIC bcrypt ws2_32 user32 shell32 secur32 crypt32)
+    target_link_libraries(skittermouse_platform PUBLIC bcrypt ws2_32 user32 shell32 secur32 crypt32 ole32)
 elseif(APPLE)
     target_link_libraries(skittermouse_platform PUBLIC
         "-framework Security" "-framework CoreFoundation" "-framework CoreGraphics"
