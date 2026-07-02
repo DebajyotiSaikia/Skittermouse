@@ -38,13 +38,17 @@ target_compile_features(skittermouse_core PUBLIC cxx_std_17)
 # e.g. HKDF layered on top of the platform HMAC (spec Section 7.1).
 set(SM_PLATFORM_SOURCES
     src/crypto/hkdf.cpp
+    src/crypto/base64.cpp
     src/pairing/verification_code.cpp
     src/pairing/ecdh_handshake.cpp
     src/pairing/key_store.cpp
     src/net/session_token.cpp
     src/net/ws_frame.cpp
+    src/net/ws_handshake.cpp
+    src/net/frame_assembler.cpp
     src/net/wol_sender.cpp
     src/net/discovery_beacon.cpp
+    src/net/discovery_table.cpp
 )
 if(WIN32)
     list(APPEND SM_PLATFORM_SOURCES

@@ -42,6 +42,24 @@ void run_crypto_tests() {
                     std::string("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
     }
 
+    // --- SHA-1 KAT ("abc") + base64 KATs (RFC 4648) -------------------------
+    {
+        auto h = sha1(reinterpret_cast<const uint8_t*>("abc"), 3);
+        SM_CHECK_EQ(hex(h.data(), 20),
+                    std::string("a9993e364706816aba3e25717850c26c9cd0d89d"));
+
+        auto b64 = [](const std::string& s) {
+            return base64Encode(reinterpret_cast<const uint8_t*>(s.data()), s.size());
+        };
+        SM_CHECK_EQ(b64(""), std::string(""));
+        SM_CHECK_EQ(b64("f"), std::string("Zg=="));
+        SM_CHECK_EQ(b64("fo"), std::string("Zm8="));
+        SM_CHECK_EQ(b64("foo"), std::string("Zm9v"));
+        SM_CHECK_EQ(b64("foob"), std::string("Zm9vYg=="));
+        SM_CHECK_EQ(b64("fooba"), std::string("Zm9vYmE="));
+        SM_CHECK_EQ(b64("foobar"), std::string("Zm9vYmFy"));
+    }
+
     // --- HMAC-SHA256 KAT (RFC 4231, Test Case 2) ----------------------------
     {
         std::string key = "Jefe", data = "what do ya want for nothing?";

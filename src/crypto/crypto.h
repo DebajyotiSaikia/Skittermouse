@@ -14,12 +14,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace sm::crypto {
 
 using Bytes = std::vector<uint8_t>;
 using Hash256 = std::array<uint8_t, 32>;
+using Hash160 = std::array<uint8_t, 20>;
 
 inline constexpr size_t kAesKeyLen = 32;   // AES-256
 inline constexpr size_t kGcmNonceLen = 12; // 96-bit GCM nonce
@@ -33,8 +35,12 @@ Bytes randomBytes(size_t len);
 
 // --- Hashing / MAC / KDF -----------------------------------------------------
 Hash256 sha256(const uint8_t* data, size_t len);
+Hash160 sha1(const uint8_t* data, size_t len); // for the WebSocket accept key
 Hash256 hmacSha256(const uint8_t* key, size_t keyLen,
                    const uint8_t* data, size_t dataLen);
+
+// Standard base64 (RFC 4648) encode. Portable (crypto/base64.cpp).
+std::string base64Encode(const uint8_t* data, size_t len);
 
 // HKDF-SHA256 (RFC 5869). Portable: implemented in crypto/hkdf.cpp on top of
 // hmacSha256(). okmLen must be <= 255*32.

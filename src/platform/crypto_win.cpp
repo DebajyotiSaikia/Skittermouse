@@ -41,6 +41,14 @@ Hash256 sha256(const uint8_t* data, size_t len) {
     return out;
 }
 
+Hash160 sha1(const uint8_t* data, size_t len) {
+    Hash160 out{};
+    BCryptHash(BCRYPT_SHA1_ALG_HANDLE, nullptr, 0,
+               const_cast<PUCHAR>(data), static_cast<ULONG>(len),
+               out.data(), static_cast<ULONG>(out.size()));
+    return out;
+}
+
 Hash256 hmacSha256(const uint8_t* key, size_t keyLen,
                    const uint8_t* data, size_t dataLen) {
     Hash256 out{};
