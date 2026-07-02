@@ -1,0 +1,6 @@
+Skittermouse "Run on startup" marker.
+
+Installed only when the optional "Run on startup" component is selected during
+setup. The installer's NSIS commands drop a shortcut into the Startup folder when
+this file is present; leaving the component unchecked (the default) installs nothing
+here, so the app never auto-starts and a reboot always recovers.

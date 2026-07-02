@@ -163,7 +163,7 @@ endif()
 # Windows -> NSIS (.exe installer); macOS -> DragNDrop (.dmg). Both are produced
 # by the nightly-release workflow (.github/workflows/nightly-release.yml) and
 # published to the rolling "nightly" GitHub Release the website links to.
-install(TARGETS skittermouse RUNTIME DESTINATION bin)
+install(TARGETS skittermouse RUNTIME DESTINATION bin COMPONENT application)
 
 set(CPACK_PACKAGE_NAME "Skittermouse")
 set(CPACK_PACKAGE_VENDOR "Skittermouse")
@@ -196,6 +196,27 @@ if(WIN32)
     # backslash NSIS needs ($INSTDIR\bin\skittermouse.exe). Two backslashes here
     # would collapse to one and make CPackConfig.cmake fail with "invalid escape \s".
     set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\skittermouse.exe")
+
+    # Optional "Run on startup" component -- UNCHECKED by default (spec 13: opt-in so a
+    # reboot always recovers). When ticked it installs a marker file; the NSIS command
+    # below then drops a shortcut into the user's Startup folder. Single-quoted NSIS
+    # strings avoid double-quote escaping; quad backslash -> one in the final script.
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/startup.marker"
+            DESTINATION bin COMPONENT startup)
+    set(CPACK_COMPONENTS_ALL application startup)
+    set(CPACK_COMPONENT_APPLICATION_HIDDEN TRUE)
+    set(CPACK_COMPONENT_APPLICATION_REQUIRED TRUE)
+    set(CPACK_COMPONENT_STARTUP_DISPLAY_NAME "Run on startup")
+    set(CPACK_COMPONENT_STARTUP_DESCRIPTION
+        "Start Skittermouse automatically when you log in (you can change this later in the tray).")
+    set(CPACK_COMPONENT_STARTUP_DISABLED TRUE)
+    set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
+      IfFileExists '$INSTDIR\\\\bin\\\\startup.marker' 0 +2
+        CreateShortCut '$SMSTARTUP\\\\Skittermouse.lnk' '$INSTDIR\\\\bin\\\\skittermouse.exe'
+    ")
+    set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "
+      Delete '$SMSTARTUP\\\\Skittermouse.lnk'
+    ")
 elseif(APPLE)
     set(CPACK_GENERATOR "DragNDrop")
     set(CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE ON)

@@ -89,9 +89,11 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 ---
 
 ## Manual validation (needs real hardware — the code is built + CI-green, but these paths can't
+
 ## be runtime-tested from the dev box; validate on your machines)
 
 ### Two Windows machines — pair, connect, forward input (Step 9, built)
+
 1. Install the same nightly on both PCs; both show the tray icon.
 2. Same LAN; allow Skittermouse through the firewall (TCP 47800 mesh + 47801 pairing) when prompted.
 3. On PC-A: tray → **Add device**, enter PC-B's IP, OK. On PC-B: tray → **Add device**, leave the
@@ -100,13 +102,16 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 5. Within a few seconds → toast "Connected to <PC>"; the peer appears in the tray menu.
 6. Click the peer (or hotkey → pick it) to switch input, then type/move → it appears on the other
    PC; switch back with the hotkey/menu. (This is exactly the flow the Docker rig proves headless.)
+
 - Not connecting? Check the firewall, the IP, and that both PCs run the same build.
 
 ### Run-on-startup installer checkbox (Step 13)
+
 - Install with "Run Skittermouse on startup" ticked → after reboot the tray reappears.
 - Default (unticked) → no autostart; enable later via tray "Run on startup" or Settings.
 
 ### Lock-screen unlock (Step 14, open question)
+
 - Switch to a LOCKED PC and type its password through forwarded input. Verify whether SendInput
   crosses the Secure Desktop (LogonUI) boundary on your Windows build; if not, unlock needs
   physical presence (documented limitation, not a bug).
@@ -114,6 +119,7 @@ Windows/macOS product (guarded by the CMake `else()`/`UNIX AND NOT APPLE` branch
 ---
 
 ## Do NOT build (spec §1 non-goals — listed so they aren't accidentally added)
+
 - Linux support in the PRODUCT (the Linux build is a TEST RIG only, never shipped).
 - Edge-of-screen crossing as a primary/load-bearing switch trigger.
 - Remote desktop, screen streaming, video capture.
