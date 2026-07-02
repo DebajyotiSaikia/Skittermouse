@@ -54,9 +54,12 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 5 — Switching UX (§4, §10, §15)
 
-- [ ] `platform/hotkey_win.cpp` — `RegisterHotKey` (default `Ctrl+Alt+Space`), loud-fail → fallback combo, surface active combo (§4.1).
-- [ ] `ui/picker_window_win.cpp` — topmost focus-stealing list; Up/Down/Enter/Esc; local keyboard hook while open; unreachable machines greyed not omitted; always-clean dismiss (§4.2).
-- [ ] `platform/tray_win.cpp` + `ui/tray_menu.h/.cpp` — `Shell_NotifyIcon`; owner marked; per-machine online/offline; Connect…/Add device/settings; no IP/port/"server" language (§10, §4.3).
+- [ ] `platform/hotkey_win.cpp` — `RegisterHotKey` using the (done) `core/hotkey` parser
+      (default `Ctrl+Alt+Space`), loud-fail → fallback combo, surface active combo (§4.1).
+- [ ] `ui/picker_window_win.cpp` — topmost focus-stealing list over the (done) `ui/menu_model`;
+      Up/Down/Enter/Esc; local keyboard hook while open; offline greyed; clean dismiss (§4.2).
+- [ ] `platform/tray_win.cpp` + `ui/tray_menu.h/.cpp` — `Shell_NotifyIcon` over the (done)
+      `ui/menu_model`; owner marked; online/offline; Connect…/Add device/settings (§10, §4.3).
 - [ ] Apply `key_translation` at injection when target OS differs (§4.5). (remap table: done.)
 - [ ] `ui/toast_notify.h/.cpp` — connection/transfer status notifications (§15).
 - [ ] Turn `main.cpp` into the real app: WIN32 subsystem, message loop, subsystem wiring, config load.
@@ -73,15 +76,16 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 7 — Discovery (§6)
 
-- [ ] UDP broadcast/listen sockets feeding the (done) beacon codec + `net/discovery_table`
-      (last-seen/staleness); "don't broadcast on this network" toggle. (codec + table: done.)
+- [ ] Wire the (done) `net/discovery_socket` (broadcast/receive) + `discovery_beacon` codec +
+      `discovery_table` into a periodic beacon loop; honor the `broadcast_presence` config
+      toggle. (sockets + codec + table: done.)
 
 ### Step 8 — Clipboard sync (§8)
 
-- [ ] `platform/clipboard_win.cpp` — `AddClipboardFormatListener` / `WM_CLIPBOARDUPDATE` (event-driven).
+- [ ] Wire `AddClipboardFormatListener` / `WM_CLIPBOARDUPDATE` (needs the app window) to the
+      (done) `clipboard_win` get/set + `core/clipboard_sync` loop-prevention.
 - [ ] `platform/clipboard_mac.mm` — poll `NSPasteboard.changeCount` 200–500 ms.
-- [ ] Plain text only v1 (`CF_UNICODETEXT` / `NSPasteboardTypeString`). (loop-prevention logic: done.)
-- [ ] Password-manager exclusion (`CFSTR_EXCLUDECLIPBOARDCONTENTFROMMONITORPROCESSING`).
+      (Windows CF_UNICODETEXT read/write + password-manager exclusion check: done.)
 
 ### Step 9 — Peer mesh, generalized to N (§2.1, §11)
 
@@ -106,7 +110,8 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 ### Step 10 — File transfer (§9)
 
-- [ ] `net/ws_file_channel.h/.cpp` — on-demand WSS, chunked bytes, opened per transfer, closed after (§5.1). (session_token: done.)
+- [ ] `net/ws_file_channel.h/.cpp` — on-demand WSS, chunked bytes, opened per transfer, closed
+      after (§5.1). (session_token + `net/file_transfer` meta/chunk codec: done.)
 - [ ] `platform/filepromise_win.cpp` — `IDataObject` delay-render: `CFSTR_FILEDESCRIPTORW` (meta now) + `CFSTR_FILECONTENTS` (`IStream` pulls bytes only on `GetData`); multi-file from the start; native Explorer progress + error UI (§9.1).
 - [ ] `platform/filepromise_mac.mm` — `NSFilePromiseProvider`; native Finder progress (§9.2).
 - [ ] Bidirectional: every machine is both promise-provider and consumer (§9.3).
@@ -115,8 +120,7 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 
 - [ ] `platform/wol_diag_win.cpp` — NIC WoL (`powercfg /deviceenablewake`) + OS wake (WMI `MSPower_DeviceWakeEnable`); cannot check BIOS — never claim certainty (§12).
 - [ ] "Waking…" state + 30–60 s timeout + guided fallback flow around the (done) magic-packet UDP sender (§12).
-- [ ] `platform/autostart_win.cpp` — Task Scheduler, **run elevated** (UIPI injection into elevated windows) (§13).
-- [ ] `platform/autostart_mac.mm` — `LaunchAgent` plist (§13).
+- [ ] `platform/autostart_mac.mm` — `LaunchAgent` plist (§13). (`autostart_win` = Task Scheduler, elevated: done.)
 - [ ] `platform/lock_mac.mm` — equivalent lock call (§14). (`lock_win` = LockWorkStation: done.)
 - [ ] Unlock = switch-then-type only (no scripted credentials); **verify Secure Desktop/`LogonUI` behavior on a real locked machine** (§14 open question).
 
