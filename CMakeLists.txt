@@ -136,6 +136,8 @@ target_link_libraries(skittermouse PRIVATE skittermouse_platform)
 if(UNIX AND NOT APPLE)
     add_executable(netcheck tools/netcheck.cpp)
     target_link_libraries(netcheck PRIVATE skittermouse_platform)
+    add_executable(netpair tools/netpair.cpp)
+    target_link_libraries(netpair PRIVATE skittermouse_platform)
 endif()
 
 if(WIN32)

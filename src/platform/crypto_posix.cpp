@@ -11,8 +11,14 @@
 
 #include "crypto/crypto.h"
 
+// Expose the OpenSSL 1.1 low-level EC_KEY API without 3.0 deprecation warnings (used
+// only by the ECDH helpers below, for the Linux pairing test).
+#define OPENSSL_API_COMPAT 0x10100000L
+#include <openssl/bn.h>
+#include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/obj_mac.h>
 #include <openssl/rand.h>
 
 namespace sm::crypto {
@@ -111,9 +117,66 @@ bool aesGcmDecrypt(const uint8_t* key32, const uint8_t* nonce, size_t nonceLen,
     return ok;
 }
 
-// ECDH is not exercised by the network test (PSKs are pre-seeded), so these are
-// unimplemented stubs here -- pairing is validated on the native backends.
-bool ecdhGenerateKeyPair(EcdhKeyPair&) { return false; }
-bool ecdhComputeShared(const EcdhKeyPair&, const Bytes&, Bytes&) { return false; }
+// ECDH P-256. Public point travels as raw 64-byte X||Y (big-endian); the shared
+// secret is the 32-byte big-endian X coordinate -- identical wire format to the
+// native BCrypt/CommonCrypto backends, so a Linux test node pairs byte-for-byte.
+bool ecdhGenerateKeyPair(EcdhKeyPair& out) {
+    EC_KEY* key = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    BIGNUM* x = BN_new();
+    BIGNUM* y = BN_new();
+    bool ok = false;
+    if (key && x && y && EC_KEY_generate_key(key) == 1) {
+        const EC_GROUP* grp = EC_KEY_get0_group(key);
+        const EC_POINT* pub = EC_KEY_get0_public_key(key);
+        const BIGNUM* priv = EC_KEY_get0_private_key(key);
+        if (EC_POINT_get_affine_coordinates(grp, pub, x, y, nullptr) == 1) {
+            out.publicPoint.assign(kEcPointLen, 0);
+            out.privateBlob.assign(32, 0);
+            BN_bn2binpad(x, out.publicPoint.data(), 32);
+            BN_bn2binpad(y, out.publicPoint.data() + 32, 32);
+            BN_bn2binpad(priv, out.privateBlob.data(), 32);
+            ok = true;
+        }
+    }
+    BN_free(x);
+    BN_free(y);
+    EC_KEY_free(key);
+    return ok;
+}
+
+bool ecdhComputeShared(const EcdhKeyPair& mine, const Bytes& peerPublicPoint,
+                       Bytes& sharedOut) {
+    if (peerPublicPoint.size() != kEcPointLen || mine.privateBlob.size() != 32) return false;
+    EC_KEY* key = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    BIGNUM* priv = BN_bin2bn(mine.privateBlob.data(), 32, nullptr);
+    BIGNUM* px = BN_bin2bn(peerPublicPoint.data(), 32, nullptr);
+    BIGNUM* py = BN_bin2bn(peerPublicPoint.data() + 32, 32, nullptr);
+    BIGNUM* sx = BN_new();
+    EC_POINT* peer = nullptr;
+    EC_POINT* secret = nullptr;
+    bool ok = false;
+    if (key && priv && px && py && sx) {
+        const EC_GROUP* grp = EC_KEY_get0_group(key);
+        peer = EC_POINT_new(grp);
+        secret = EC_POINT_new(grp);
+        if (peer && secret && EC_KEY_set_private_key(key, priv) == 1 &&
+            EC_POINT_set_affine_coordinates(grp, peer, px, py, nullptr) == 1 &&
+            EC_POINT_is_on_curve(grp, peer, nullptr) == 1 &&
+            EC_POINT_mul(grp, secret, nullptr, peer, priv, nullptr) == 1 &&
+            EC_POINT_get_affine_coordinates(grp, secret, sx, nullptr, nullptr) == 1) {
+            sharedOut.assign(32, 0);
+            BN_bn2binpad(sx, sharedOut.data(), 32);
+            ok = true;
+        }
+    }
+    EC_POINT_free(peer);
+    EC_POINT_free(secret);
+    BN_free(priv);
+    BN_free(px);
+    BN_free(py);
+    BN_free(sx);
+    EC_KEY_free(key);
+    return ok;
+}
 
 } // namespace sm::crypto

@@ -1,0 +1,20 @@
+# Pairing validation (spec 7.1): two nodes run the ECDH numeric-comparison over real
+# TCP and each derives the 6-digit code + long-term PSK. A genuine pairing produces
+# the SAME code + PSK on both sides (tests/docker/run-pair asserts they match).
+services:
+  pnodeb:
+    image: skittermouse-netcheck
+    entrypoint: ["/src/build/netpair"]
+    command: ["--self","B","--peer","A","--listen","9000","--seconds","40"]
+    networks: [smnet]
+
+  pnodea:
+    image: skittermouse-netcheck
+    depends_on: [pnodeb]
+    entrypoint: ["/src/build/netpair"]
+    command: ["--self","A","--peer","B","--listen","9001","--connect","pnodeb:9000","--seconds","40"]
+    networks: [smnet]
+
+networks:
+  smnet:
+    driver: bridge
