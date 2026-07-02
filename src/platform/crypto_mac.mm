@@ -5,10 +5,24 @@
 
 #include "crypto/crypto.h"
 
+#import <Foundation/Foundation.h>
 #import <CommonCrypto/CommonCrypto.h>
 #import <Security/Security.h>
 
 #include <algorithm>
+
+// CommonCrypto's AES-GCM piecewise API lives in the private CommonCryptorSPI.h (not
+// in the public SDK header) but the symbols are exported by libSystem at runtime.
+// Declare exactly what we use so this compiles against the public SDK; kCCModeGCM is
+// the documented GCM chaining-mode value (11).
+extern "C" {
+CCCryptorStatus CCCryptorGCMAddIV(CCCryptorRef, const void*, size_t);
+CCCryptorStatus CCCryptorGCMaddAAD(CCCryptorRef, const void*, size_t);
+CCCryptorStatus CCCryptorGCMEncrypt(CCCryptorRef, const void*, size_t, void*);
+CCCryptorStatus CCCryptorGCMDecrypt(CCCryptorRef, const void*, size_t, void*);
+CCCryptorStatus CCCryptorGCMFinal(CCCryptorRef, void*, size_t*);
+}
+static const CCMode kSMModeGCM = static_cast<CCMode>(11);
 
 namespace sm::crypto {
 
@@ -47,7 +61,7 @@ bool gcm(bool encrypt, const uint8_t* key, const uint8_t* nonce, size_t nlen,
          const uint8_t* aad, size_t alen, const uint8_t* in, size_t ilen,
          uint8_t* out, uint8_t* tag16) {
     CCCryptorRef c = nullptr;
-    if (CCCryptorCreateWithMode(encrypt ? kCCEncrypt : kCCDecrypt, kCCModeGCM, kCCAlgorithmAES,
+    if (CCCryptorCreateWithMode(encrypt ? kCCEncrypt : kCCDecrypt, kSMModeGCM, kCCAlgorithmAES,
                                 ccNoPadding, nullptr, key, kCCKeySizeAES256, nullptr, 0, 0, 0,
                                 &c) != kCCSuccess) {
         return false;
@@ -160,7 +174,7 @@ bool ecdhComputeShared(const EcdhKeyPair& mine, const Bytes& peerPublicPoint, By
         if (pub) {
             CFDataRef sec = SecKeyCopyKeyExchangeResult(
                 priv, kSecKeyAlgorithmECDHKeyExchangeStandard, pub,
-                (__bridge CFDictionaryRef) @ {}, nullptr);
+                (__bridge CFDictionaryRef) @{}, nullptr);
             if (sec) {
                 size_t sl = static_cast<size_t>(CFDataGetLength(sec));
                 if (sl == kSharedLen) {

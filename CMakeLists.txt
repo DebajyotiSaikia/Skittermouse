@@ -67,6 +67,7 @@ if(WIN32)
         src/platform/clipboard_win.cpp    # Section 8: CF_UNICODETEXT + exclusion check
         src/platform/autostart_win.cpp    # Section 13: Task Scheduler, elevated
         src/platform/tray_win.cpp         # Section 10: Shell_NotifyIcon tray app shell
+        src/pairing/pairing_dialog_win.cpp # Section 7.1: numeric-comparison confirm dialog
         # ... added as sections land
     )
 elseif(APPLE)
@@ -78,6 +79,7 @@ elseif(APPLE)
         src/platform/clipboard_mac.mm     # Section 8: NSPasteboard
         src/platform/autostart_mac.mm     # Section 13: LaunchAgent plist
         src/platform/crypto_mac.mm        # Sections 5.4/7: CommonCrypto + Security.framework
+        src/pairing/pairing_dialog_mac.mm # Section 7.1: NSAlert confirm dialog
     )
 endif()
 
