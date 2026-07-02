@@ -5,7 +5,10 @@
 #include "platform/tray_app.h"
 
 #include "core/config.h"
+#include "core/hotkey.h"
+#include "platform/global_hotkey.h"
 #include "ui/menu_model.h"
+#include "ui/picker_window.h"
 
 #import <AppKit/AppKit.h>
 
@@ -13,6 +16,7 @@
 
 @interface SMTrayDelegate : NSObject <NSApplicationDelegate>
 @property(strong) NSStatusItem* statusItem;
+- (void)openPicker;
 @end
 
 @implementation SMTrayDelegate
@@ -51,6 +55,29 @@
     [menu addItem:quit];
 
     self.statusItem.menu = menu;
+
+    // Global hotkey -> picker, mirroring the Windows tray (spec 4.1/4.2). If the
+    // configured combo is already owned by another app, fall back to the secondary
+    // combo, same policy as tray_win.cpp.
+    SMTrayDelegate* me = self;
+    sm::core::Hotkey hk = sm::core::parseHotkey(config.settings.hotkey);
+    if (!sm::platform::registerGlobalHotkey(hk, [me]() { [me openPicker]; })) {
+        sm::core::Hotkey fallback = sm::core::parseHotkey("Ctrl+Shift+Alt+Space");
+        sm::platform::registerGlobalHotkey(fallback, [me]() { [me openPicker]; });
+    }
+}
+
+- (void)openPicker {
+    // Same list/logic as the tray menu (spec 4.3). Selecting a machine is where a
+    // switch would be requested once the macOS mesh/connection layer is wired in,
+    // mirroring requestSwitchTo() in the Windows tray.
+    sm::core::Config config;
+    auto items = sm::ui::buildMachineMenu(config.devices, "this-machine", "this-machine", {});
+    std::string chosen = sm::ui::showPicker(items);
+    if (!chosen.empty()) {
+        NSString* title = [NSString stringWithUTF8String:chosen.c_str()];
+        self.statusItem.button.title = title ? title : @"Skittermouse";
+    }
 }
 
 - (void)quit:(id)sender {

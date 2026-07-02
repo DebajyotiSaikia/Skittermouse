@@ -82,6 +82,8 @@ elseif(APPLE)
         src/platform/autostart_mac.mm     # Section 13: LaunchAgent plist
         src/platform/crypto_mac.mm        # Sections 5.4/7: CommonCrypto + Security.framework
         src/platform/tray_mac.mm          # Section 10: NSStatusBar tray app shell
+        src/platform/hotkey_mac.mm        # Section 4.1: Carbon RegisterEventHotKey global hotkey
+        src/ui/picker_window_mac.mm       # Section 4.2: topmost NSPanel machine picker
         src/pairing/pairing_dialog_mac.mm # Section 7.1: NSAlert confirm dialog
     )
 endif()
@@ -98,7 +100,7 @@ if(WIN32)
 elseif(APPLE)
     target_link_libraries(skittermouse_platform PUBLIC
         "-framework Security" "-framework CoreFoundation" "-framework CoreGraphics"
-        "-framework AppKit" "-framework Foundation")
+        "-framework AppKit" "-framework Foundation" "-framework Carbon")
 endif()
 
 # --- app executable ----------------------------------------------------------
