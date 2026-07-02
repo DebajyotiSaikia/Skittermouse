@@ -973,18 +973,24 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
 } // namespace
 
 int runTrayApp() {
+    // Log first (before anything can early-return) so "did the finish-page Run launch
+    // us?" is answerable from %APPDATA%\Skittermouse\log.txt.
+    sm::log::init(logPath());
+    sm::log::write("[app] runTrayApp entry");
+
     // Single-instance guard: if another copy is already running (e.g. the installer's
-    // "Run" launched one while a zombie from a reinstall lingers, or autostart already
-    // ran it), exit quietly so two instances never fight over the fixed ports.
+    // "Run" launched one while a prior instance from autostart/a reinstall lingers),
+    // exit quietly so two instances never fight over the fixed ports. Logged so a
+    // "nothing happened after Finish" report is diagnosable.
     HANDLE singleton = CreateMutexW(nullptr, TRUE, L"SkittermouseSingletonMutex");
     if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
-        return 0; // another instance owns the tray; leave it be
+        sm::log::write("[app] another instance already running; exiting (tray already present)");
+        return 0;
     }
 
     AppState app;
     g_app = &app;
 
-    sm::log::init(logPath()); // on-machine debug log: %APPDATA%\Skittermouse\log.txt
     sm::log::write("[app] Skittermouse starting");
     OleInitialize(nullptr); // OLE clipboard for the delay-render file promise (spec 9.1)
 

@@ -48,8 +48,13 @@ void closeSock(int s) { ::close(s); }
 // with a VPN up, is the VPN tunnel, so LAN peers never see it. Sending to each active
 // interface's OWN subnet broadcast (ip | ~mask) makes the routing table egress the
 // matching NIC, so the LAN adapter is always covered regardless of VPN/default route.
-std::vector<uint32_t> directedBroadcasts() {
-    std::vector<uint32_t> out;
+struct NicAddr {
+    uint32_t local; // interface unicast IP  (network byte order)
+    uint32_t bcast; // that subnet's broadcast (network byte order)
+};
+
+std::vector<NicAddr> localInterfaces() {
+    std::vector<NicAddr> out;
 #ifdef _WIN32
     ULONG size = 15000;
     std::vector<uint8_t> buf(size);
@@ -66,11 +71,12 @@ std::vector<uint32_t> directedBroadcasts() {
         if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
         for (auto* ua = a->FirstUnicastAddress; ua; ua = ua->Next) {
             if (!ua->Address.lpSockaddr || ua->Address.lpSockaddr->sa_family != AF_INET) continue;
-            uint32_t ip = ntohl(reinterpret_cast<sockaddr_in*>(ua->Address.lpSockaddr)->sin_addr.s_addr);
+            uint32_t localNet = reinterpret_cast<sockaddr_in*>(ua->Address.lpSockaddr)->sin_addr.s_addr;
+            uint32_t ip = ntohl(localNet);
             unsigned prefix = ua->OnLinkPrefixLength;
             if (prefix == 0 || prefix > 32) continue;
             uint32_t mask = (prefix == 32) ? 0xFFFFFFFFu : ~((1u << (32 - prefix)) - 1);
-            out.push_back(htonl((ip & mask) | ~mask));
+            out.push_back({localNet, htonl((ip & mask) | ~mask)});
         }
     }
 #else
@@ -80,11 +86,23 @@ std::vector<uint32_t> directedBroadcasts() {
         if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
         if ((ifa->ifa_flags & IFF_LOOPBACK) || !(ifa->ifa_flags & IFF_UP)) continue;
         if (!(ifa->ifa_flags & IFF_BROADCAST) || !ifa->ifa_broadaddr) continue;
-        out.push_back(reinterpret_cast<sockaddr_in*>(ifa->ifa_broadaddr)->sin_addr.s_addr);
+        out.push_back({reinterpret_cast<sockaddr_in*>(ifa->ifa_addr)->sin_addr.s_addr,
+                       reinterpret_cast<sockaddr_in*>(ifa->ifa_broadaddr)->sin_addr.s_addr});
     }
     freeifaddrs(ifap);
 #endif
     return out;
+}
+
+// Send `pkt` to `dst`:`port` from socket `s`. Returns true if all bytes went out.
+bool sendTo(SOCKET s, const Bytes& pkt, uint32_t dst, uint16_t port) {
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = dst;
+    int sent = sendto(s, reinterpret_cast<const char*>(pkt.data()), static_cast<int>(pkt.size()), 0,
+                      reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    return sent == static_cast<int>(pkt.size());
 }
 
 } // namespace
@@ -93,30 +111,40 @@ bool broadcastBeacon(const Beacon& b, uint16_t port) {
     WsaScope wsa;
     if (!wsa.ok) return false;
 
-    Bytes pkt = encodeBeacon(b);
-    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s == INVALID_SOCKET) return false;
-
-    int yes = 1;
-    setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes), sizeof(yes));
-
-    // Send to every interface's directed broadcast (covers the LAN even with a VPN up),
-    // plus the limited broadcast as a belt-and-braces fallback.
-    std::vector<uint32_t> targets = directedBroadcasts();
-    targets.push_back(htonl(INADDR_BROADCAST));
-
+    const Bytes pkt = encodeBeacon(b);
+    const std::vector<NicAddr> nics = localInterfaces();
     bool anySent = false;
-    for (uint32_t dst : targets) {
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-        addr.sin_addr.s_addr = dst;
-        int sent = sendto(s, reinterpret_cast<const char*>(pkt.data()),
-                          static_cast<int>(pkt.size()), 0, reinterpret_cast<sockaddr*>(&addr),
-                          sizeof(addr));
-        if (sent == static_cast<int>(pkt.size())) anySent = true;
+
+    // Per-interface: bind a socket to the NIC's own IP and send to BOTH its subnet
+    // broadcast and the limited broadcast. Binding forces egress out THAT NIC, so a
+    // VPN owning the default route can't swallow the beacon -- the LAN adapter still
+    // gets it. (This is the fix for "one PC can't be discovered when a VPN is up".)
+    for (const NicAddr& nic : nics) {
+        SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (s == INVALID_SOCKET) continue;
+        int yes = 1;
+        setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes), sizeof(yes));
+        sockaddr_in local{};
+        local.sin_family = AF_INET;
+        local.sin_addr.s_addr = nic.local;
+        local.sin_port = 0;
+        bind(s, reinterpret_cast<sockaddr*>(&local), sizeof(local)); // best-effort pin to NIC
+        if (sendTo(s, pkt, nic.bcast, port)) anySent = true;
+        if (sendTo(s, pkt, htonl(INADDR_BROADCAST), port)) anySent = true;
+        closeSock(s);
     }
-    closeSock(s);
+
+    // Fallback for the (rare) no-interface-enumerated case: one unbound limited cast.
+    if (nics.empty()) {
+        SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (s != INVALID_SOCKET) {
+            int yes = 1;
+            setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes),
+                       sizeof(yes));
+            if (sendTo(s, pkt, htonl(INADDR_BROADCAST), port)) anySent = true;
+            closeSock(s);
+        }
+    }
     return anySent;
 }
 

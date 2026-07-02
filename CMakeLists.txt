@@ -10,6 +10,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
 endif()
 
+# Static C/C++ runtime on MSVC (/MT, /MTd) so the shipped exe has NO Visual C++
+# redistributable dependency -- a fresh Windows machine can run it with nothing
+# preinstalled. Missing VCRUNTIME140.dll / MSVCP140.dll is a common "the app won't
+# launch after install" cause; static linking removes it entirely. Needs CMP0091.
+if(MSVC)
+    cmake_policy(SET CMP0091 NEW)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 option(SM_BUILD_TESTS "Build Skittermouse unit tests" ON)
 
 # --- core: pure logic, NO platform / OS includes (spec Section 2.2, 16) ------
@@ -225,8 +234,12 @@ if(WIN32)
     set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
       nsExec::Exec 'netsh advfirewall firewall delete rule name=Skittermouse'
       nsExec::Exec 'netsh advfirewall firewall delete rule name=SkittermouseUDP'
+      nsExec::Exec 'netsh advfirewall firewall delete rule name=SkittermouseOut'
+      nsExec::Exec 'netsh advfirewall firewall delete rule name=SkittermouseOutUDP'
       nsExec::Exec 'netsh advfirewall firewall add rule name=Skittermouse dir=in action=allow protocol=TCP localport=47800-47803'
       nsExec::Exec 'netsh advfirewall firewall add rule name=SkittermouseUDP dir=in action=allow protocol=UDP localport=47802'
+      nsExec::Exec 'netsh advfirewall firewall add rule name=SkittermouseOut dir=out action=allow protocol=TCP remoteport=47800-47803'
+      nsExec::Exec 'netsh advfirewall firewall add rule name=SkittermouseOutUDP dir=out action=allow protocol=UDP remoteport=47802'
       IfFileExists '$INSTDIR\\\\bin\\\\startup.marker' 0 +2
         CreateShortCut '$SMSTARTUP\\\\Skittermouse.lnk' '$INSTDIR\\\\bin\\\\skittermouse.exe'
     ")
@@ -236,6 +249,8 @@ if(WIN32)
       nsExec::Exec 'taskkill /IM skittermouse.exe /F'
       nsExec::Exec 'netsh advfirewall firewall delete rule name=Skittermouse'
       nsExec::Exec 'netsh advfirewall firewall delete rule name=SkittermouseUDP'
+      nsExec::Exec 'netsh advfirewall firewall delete rule name=SkittermouseOut'
+      nsExec::Exec 'netsh advfirewall firewall delete rule name=SkittermouseOutUDP'
       Delete '$SMSTARTUP\\\\Skittermouse.lnk'
     ")
 elseif(APPLE)
