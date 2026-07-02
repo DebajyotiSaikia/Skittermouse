@@ -35,24 +35,24 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 ### Step 4 — Input channel: transport finish (§5)
 
 - [ ] TLS-wrap (Schannel) the (done) client + server WebSocket transport for full `wss://`.
-- [ ] Milestone: two real machines forwarding encrypted input end-to-end. (transport interface,
-      WS handshake/framing/assembler, **client + server** transport, message codec, the
-      **AES-256-GCM per-message `Transport` decorator** (strict nonce counter + anti-replay,
-      3-node e2e through it), the **secure link handshake** (PSK selection + sealing + crypto
-      identity, e2e-tested), MeshNode routing wired into the tray, 3-node loopback e2e: done.)
+- [x] Milestone: two real machines forwarding encrypted input end-to-end. **VALIDATED** via a
+      two-container Docker rig (tests/docker/): two isolated Linux nodes connect over real
+      TCP/WebSocket, run the clear-id-hint -> per-device-PSK -> AES-256-GCM secure link, do the
+      encrypted peer-hello handshake, elect a coordinator, switch input ownership, and forward
+      a keystroke that the sink decrypts + injects (RESULT PASS). Exercises the SAME product
+      logic (secure_link -> ConnectionManager -> MeshNode -> EncryptedTransport) over a real
+      POSIX WS transport (`platform/ws_transport_posix.cpp`, which is also the macOS transport).
 
 ### Step 9 — Peer mesh: remaining
 
 - [ ] OS network thread (glue only): open a TCP/WS `connect()` to each paired peer and
       `wsAcceptOne()` for inbound sockets, then hand each raw socket to `secureOutbound()` /
-      `InboundHandshake` and the sealed link to `ConnectionManager`. (**Secure link
-      establishment** — clear id-hint → per-device PSK selection from the KeyStore → AES-GCM
-      sealing, with identity proven cryptographically and wrong-PSK/not-paired/imposter
-      rejection — is done and e2e-tested through a full mesh switch. peer-hello handshake, link
-      identification/lifecycle, dedup, disconnect reaping, mesh registration + pump via
-      `ConnectionManager`; N-peer ownership broadcast, race resolution, coordinator election/
-      failover/failback, priority list, MeshNode wired into the tray: done. Only the raw socket
-      calls + the thread loop/mutex remain — untestable without two machines.)
+      `InboundHandshake` and the sealed link to `ConnectionManager`. **This exact orchestration
+      is now proven** by the `tools/netcheck` harness (single-threaded connect/accept + secure
+      link + ConnectionManager pump) in the two-container rig; the remaining product step is to
+      run that loop on a background thread in the Windows tray (mutex around the mesh) and add a
+      dial `connect()` timeout so an offline peer doesn't stall the dialer. macOS also needs a
+      thread using the (now-written) POSIX transport.
 
 ### Step 10 — File transfer: OS delay-render (§9)
 
