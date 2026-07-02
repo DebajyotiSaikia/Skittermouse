@@ -17,6 +17,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+
 #include <cerrno>
 #include <cstring>
 #include <string>
@@ -30,12 +35,58 @@ void setNonBlocking(int fd) {
     if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+// --- TLS (spec 5.1: wss://) via OpenSSL for the macOS product + Linux test rig.
+// Peer identity is authenticated by the app-layer secure link (PSK), so TLS here is
+// encryption-only: the server presents an ephemeral self-signed cert and the client
+// does not verify it -- the PSK remains the trust gate (see the ws_transport_win.cpp
+// Schannel counterpart, which does the same).
+SSL_CTX* clientTlsCtx() {
+    static SSL_CTX* ctx = [] {
+        SSL_CTX* c = SSL_CTX_new(TLS_client_method());
+        if (c) SSL_CTX_set_verify(c, SSL_VERIFY_NONE, nullptr);
+        return c;
+    }();
+    return ctx;
+}
+
+bool installSelfSignedCert(SSL_CTX* ctx) {
+    EVP_PKEY* pkey = EVP_PKEY_Q_keygen(nullptr, nullptr, "EC", "P-256");
+    if (!pkey) return false;
+    X509* x = X509_new();
+    bool ok = false;
+    if (x) {
+        ASN1_INTEGER_set(X509_get_serialNumber(x), 1);
+        X509_gmtime_adj(X509_getm_notBefore(x), 0);
+        X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 3650); // ~10 years
+        X509_set_pubkey(x, pkey);
+        X509_NAME* nm = X509_get_subject_name(x);
+        X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
+                                   reinterpret_cast<const unsigned char*>("Skittermouse"), -1, -1,
+                                   0);
+        X509_set_issuer_name(x, nm);
+        ok = X509_sign(x, pkey, EVP_sha256()) && SSL_CTX_use_certificate(ctx, x) == 1 &&
+             SSL_CTX_use_PrivateKey(ctx, pkey) == 1;
+    }
+    if (x) X509_free(x);
+    EVP_PKEY_free(pkey);
+    return ok;
+}
+
+SSL_CTX* serverTlsCtx() {
+    static SSL_CTX* ctx = [] {
+        SSL_CTX* c = SSL_CTX_new(TLS_server_method());
+        if (c) installSelfSignedCert(c);
+        return c;
+    }();
+    return ctx;
+}
+
 // One WebSocket transport over a connected TCP socket. Per RFC 6455, client-role
 // frames are masked and server-role (accepted) frames are not.
 class PosixWsTransport : public Transport {
 public:
-    explicit PosixWsTransport(int sock = -1, bool client = true)
-        : sock_(sock), client_(client), connected_(sock >= 0) {}
+    PosixWsTransport(int sock = -1, bool client = true, SSL* ssl = nullptr)
+        : sock_(sock), client_(client), connected_(sock >= 0), ssl_(ssl) {}
 
     ~PosixWsTransport() override { close(); }
 
@@ -81,13 +132,25 @@ public:
         }
         freeaddrinfo(res);
 
+        // TLS handshake (wss://) on the connected, blocking socket before the WS upgrade.
+        ssl_ = SSL_new(clientTlsCtx());
+        if (!ssl_) { ::close(sock_); sock_ = -1; return false; }
+        SSL_set_fd(ssl_, sock_);
+        if (SSL_connect(ssl_) != 1) {
+            SSL_free(ssl_);
+            ssl_ = nullptr;
+            ::close(sock_);
+            sock_ = -1;
+            return false;
+        }
+
         std::string key = wsGenerateClientKey();
         std::string req = wsBuildClientHandshake(host + ":" + portStr, "/input", key);
-        if (!sendAll(reinterpret_cast<const uint8_t*>(req.data()), req.size())) return false;
+        if (!rawSendAll(reinterpret_cast<const uint8_t*>(req.data()), req.size())) return false;
         std::string resp;
         char c;
         while (resp.find("\r\n\r\n") == std::string::npos) {
-            long n = ::recv(sock_, &c, 1, 0);
+            long n = rawRecv(&c, 1);
             if (n <= 0) return false;
             resp += c;
             if (resp.size() > 8192) return false;
@@ -103,7 +166,7 @@ public:
     bool send(const uint8_t* data, std::size_t len) override {
         if (!connected_) return false;
         Bytes frame = wsEncodeFrame(WsOpcode::Binary, data, len, /*masked*/ client_);
-        return sendAll(frame.data(), frame.size());
+        return rawSendAll(frame.data(), frame.size());
     }
 
     int recv(uint8_t* buf, std::size_t cap) override {
@@ -111,7 +174,7 @@ public:
         WsFrame out;
         if (assembler_.next(out)) return copyFrame(out, buf, cap);
         char tmp[4096];
-        long n = ::recv(sock_, tmp, sizeof(tmp), 0);
+        long n = rawRecv(tmp, sizeof(tmp));
         if (n == 0) { connected_ = false; return -1; }
         if (n < 0) {
             if (errno == EWOULDBLOCK || errno == EAGAIN) return 0;
@@ -124,11 +187,43 @@ public:
     }
 
     void close() override {
+        if (ssl_) {
+            SSL_shutdown(ssl_);
+            SSL_free(ssl_);
+            ssl_ = nullptr;
+        }
         if (sock_ >= 0) {
             ::close(sock_);
             sock_ = -1;
         }
         connected_ = false;
+    }
+
+    // Server-side WS opening handshake, read/written over the (already-established)
+    // TLS stream. Called by wsAcceptOne after SSL_accept. False on a bad request.
+    bool serverHandshake() {
+        std::string req;
+        char c;
+        while (req.find("\r\n\r\n") == std::string::npos) {
+            long n = rawRecv(&c, 1);
+            if (n <= 0) return false;
+            req += c;
+            if (req.size() > 8192) return false;
+        }
+        const std::string tag = "Sec-WebSocket-Key:";
+        std::size_t p = req.find(tag);
+        if (p == std::string::npos) return false;
+        p += tag.size();
+        while (p < req.size() && (req[p] == ' ' || req[p] == '\t')) ++p;
+        std::size_t e = req.find("\r\n", p);
+        if (e == std::string::npos) return false;
+        std::string key = req.substr(p, e - p);
+        if (key.empty()) return false;
+        std::string resp = wsBuildServerResponse(key);
+        if (!rawSendAll(reinterpret_cast<const uint8_t*>(resp.data()), resp.size())) return false;
+        setNonBlocking(sock_);
+        connected_ = true;
+        return true;
     }
 
 private:
@@ -137,23 +232,41 @@ private:
         std::memcpy(buf, f.payload.data(), n);
         return static_cast<int>(n);
     }
-    bool sendAll(const uint8_t* d, std::size_t len) {
+    long rawRecv(void* buf, std::size_t n) {
+        if (!ssl_) return ::recv(sock_, buf, n, 0);
+        int r = SSL_read(ssl_, buf, static_cast<int>(n));
+        if (r > 0) return r;
+        int e = SSL_get_error(ssl_, r);
+        if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) {
+            errno = EWOULDBLOCK;
+            return -1;
+        }
+        return 0; // clean close or fatal error -> EOF
+    }
+
+    bool rawSendAll(const uint8_t* d, std::size_t len) {
         std::size_t sent = 0;
         while (sent < len) {
-            long n = ::send(sock_, d + sent, len - sent, 0);
-            if (n < 0) {
-                if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                    fd_set wr;
-                    FD_ZERO(&wr);
-                    FD_SET(sock_, &wr);
-                    timeval tv{0, 100000}; // 100 ms
-                    if (select(sock_ + 1, nullptr, &wr, nullptr, &tv) <= 0) return false;
-                    continue;
-                }
-                return false;
+            int r;
+            if (ssl_) r = SSL_write(ssl_, d + sent, static_cast<int>(len - sent));
+            else r = static_cast<int>(::send(sock_, d + sent, len - sent, 0));
+            if (r > 0) {
+                sent += static_cast<std::size_t>(r);
+                continue;
             }
-            if (n == 0) return false;
-            sent += static_cast<std::size_t>(n);
+            bool wouldBlock;
+            if (ssl_) {
+                int e = SSL_get_error(ssl_, r);
+                wouldBlock = (e == SSL_ERROR_WANT_WRITE || e == SSL_ERROR_WANT_READ);
+            } else {
+                wouldBlock = (errno == EWOULDBLOCK || errno == EAGAIN);
+            }
+            if (!wouldBlock) return false;
+            fd_set wr;
+            FD_ZERO(&wr);
+            FD_SET(sock_, &wr);
+            timeval tv{0, 100000}; // 100 ms
+            if (select(sock_ + 1, nullptr, &wr, nullptr, &tv) <= 0) return false;
         }
         return true;
     }
@@ -161,19 +274,9 @@ private:
     int sock_ = -1;
     bool client_ = true;
     bool connected_ = false;
+    SSL* ssl_ = nullptr;
     WsFrameAssembler assembler_;
 };
-
-std::string parseKey(const std::string& req) {
-    const std::string tag = "Sec-WebSocket-Key:";
-    std::size_t p = req.find(tag);
-    if (p == std::string::npos) return {};
-    p += tag.size();
-    while (p < req.size() && (req[p] == ' ' || req[p] == '\t')) ++p;
-    std::size_t e = req.find("\r\n", p);
-    if (e == std::string::npos) return {};
-    return req.substr(p, e - p);
-}
 
 } // namespace
 
@@ -209,25 +312,22 @@ Transport* wsAcceptOne(uint16_t port, int timeoutMs) {
     ::close(listenSock);
     if (client < 0) return nullptr;
 
-    std::string req;
-    char c;
-    while (req.find("\r\n\r\n") == std::string::npos) {
-        long n = ::recv(client, &c, 1, 0);
-        if (n <= 0) { ::close(client); return nullptr; }
-        req += c;
-        if (req.size() > 8192) { ::close(client); return nullptr; }
+    // TLS handshake (wss://) on the accepted, blocking socket, then the WS upgrade
+    // over the TLS stream (both inside the transport's serverHandshake()).
+    SSL* ssl = SSL_new(serverTlsCtx());
+    if (!ssl) { ::close(client); return nullptr; }
+    SSL_set_fd(ssl, client);
+    if (SSL_accept(ssl) != 1) {
+        SSL_free(ssl);
+        ::close(client);
+        return nullptr;
     }
-    std::string key = parseKey(req);
-    if (key.empty()) { ::close(client); return nullptr; }
-    std::string resp = wsBuildServerResponse(key);
-    std::size_t sent = 0;
-    while (sent < resp.size()) {
-        long n = ::send(client, resp.data() + sent, resp.size() - sent, 0);
-        if (n <= 0) { ::close(client); return nullptr; }
-        sent += static_cast<std::size_t>(n);
+    PosixWsTransport* t = new PosixWsTransport(client, /*client role*/ false, ssl);
+    if (!t->serverHandshake()) {
+        delete t;
+        return nullptr;
     }
-    setNonBlocking(client);
-    return new PosixWsTransport(client, /*client role*/ false);
+    return t;
 }
 
 } // namespace sm::net
