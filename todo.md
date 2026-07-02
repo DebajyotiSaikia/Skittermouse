@@ -136,13 +136,13 @@ re-check against [spec.md](spec.md) §16 — the native path exists for all of i
 ## Tests — 100% coverage (all steps)
 
 - [~] Unit tests for every pure-logic module landed so far (**533 checks**, native harness):
-      core logic, crypto (KAT + OpenSSL cross-check, incl. SHA-1/base64), pairing, session
-      token, WS handshake/framing/assembler, message codec, WoL, beacon, discovery table,
-      heartbeat, input pipeline, config, key_translation. Extend to 100% as new modules land.
+  core logic, crypto (KAT + OpenSSL cross-check, incl. SHA-1/base64), pairing, session
+  token, WS handshake/framing/assembler, message codec, WoL, beacon, discovery table,
+  heartbeat, input pipeline, config, key_translation. Extend to 100% as new modules land.
 - [~] Headless e2e flow through the real Transport (loopback): pairing → session token → input
-      forwarding + stuck-key release → ownership switch → clipboard loop-prevention → heartbeat
-      fail-safe → protocol-mismatch reject. Extend with clipboard/file-transfer over the wire
-      and coordinator failover/failback as those land.
+  forwarding + stuck-key release → ownership switch → clipboard loop-prevention → heartbeat
+  fail-safe → protocol-mismatch reject. Extend with clipboard/file-transfer over the wire
+  and coordinator failover/failback as those land.
 - [~] Keep the Windows + macOS CI builds green and all tests passing at every step. (533/533.)
 
 ---

@@ -52,6 +52,7 @@ set(SM_PLATFORM_SOURCES
     src/net/wol_sender.cpp
     src/net/discovery_beacon.cpp
     src/net/discovery_table.cpp
+    src/net/discovery_socket.cpp
 )
 if(WIN32)
     list(APPEND SM_PLATFORM_SOURCES
@@ -60,6 +61,8 @@ if(WIN32)
         src/platform/capture_win.cpp      # Section 3.1: WH_MOUSE_LL + WH_KEYBOARD_LL
         src/platform/ws_transport_win.cpp # Section 5.1: TCP + WebSocket client transport
         src/platform/lock_win.cpp         # Section 14: LockWorkStation
+        src/platform/clipboard_win.cpp    # Section 8: CF_UNICODETEXT + exclusion check
+        src/platform/autostart_win.cpp    # Section 13: Task Scheduler, elevated
         # ... added as sections land
     )
 elseif(APPLE)
