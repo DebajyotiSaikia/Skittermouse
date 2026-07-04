@@ -832,7 +832,8 @@ void fileServeThreadProc() {
         }
         if (snd.fileCount() == 0) continue;
         sm::log::write("[file] serving " + std::to_string(snd.fileCount()) + " file(s)");
-        sm::net::FileChannel::sendAll(*link.transport, snd, 64 * 1024);
+        if (!sm::net::FileChannel::sendAll(*link.transport, snd, 64 * 1024))
+            sm::log::write("[file] send aborted mid-file (peer back-pressure / write timeout)");
         // Keep the socket open until the peer finishes reading and closes it (Explorer
         // may still be pulling bytes for a large file). The peer closes as soon as it
         // has every byte buffered; the generous cap guards a peer that never closes.
@@ -858,8 +859,15 @@ struct FilePullSession {
     bool failed = false;
     bool dialed = false;
     bool loggedDone = false;
+    std::thread drainThread;       // drains the /files link independent of Explorer's reads
+    std::atomic<bool> stop{false};
 
-    // Open the secure /files link to the source (once).
+    ~FilePullSession() {
+        stop.store(true);
+        if (drainThread.joinable()) drainThread.join();
+    }
+
+    // Open the secure /files link to the source (once). Caller holds mtx.
     bool ensureConnected() {
         if (dialed) return transport != nullptr;
         dialed = true;
@@ -885,47 +893,72 @@ struct FilePullSession {
         }
         transport = std::move(link.transport);
         sm::log::write("[file] pulling from " + sourceId + " at " + sourceIp);
+        drainThread = std::thread([this] { drainLoop(); });
         return true;
     }
 
-    // Serve bytes of file `index` at `offset`. Blocks (draining the link) until the
-    // bytes arrive; returns bytes copied, 0 at EOF, -1 on failure/timeout.
-    int read(uint32_t index, uint64_t offset, uint8_t* buf, uint32_t cap) {
-        std::lock_guard<std::mutex> lk(mtx);
-        if (failed) return -1;
-        if (!ensureConnected()) return -1;
-        const uint64_t deadline = GetTickCount64() + 30000; // 30 s no-progress budget
-        for (;;) {
-            const bool haveFile = receiver.fileCount() > index;
-            const std::size_t have = haveFile ? receiver.received(index) : 0; // bytes truly here
-            if (offset < have) {
-                std::size_t avail = have - static_cast<std::size_t>(offset);
-                std::size_t n = avail < cap ? avail : cap;
-                std::memcpy(buf, receiver.data(index).data() + offset, n);
-                return static_cast<int>(n);
-            }
-            if (haveFile && receiver.complete(index) && offset >= have) return 0; // EOF
-            sm::net::FileChannel::receiveAvailable(*transport, receiver);
-            // Once every byte is buffered locally, close the source socket so its serve
-            // loop is freed immediately; the buffer persists, so later reads still work.
-            if (receiver.allComplete()) {
-                if (!loggedDone) {
-                    loggedDone = true;
-                    sm::log::write("[file] pull COMPLETE from " + sourceId);
+    // Continuously pull bytes off the /files link into the receive buffer, INDEPENDENT
+    // of how fast Explorer calls Read. If we only drained inside read() (i.e. while a
+    // paste is actively reading), TCP back-pressure would build in the gaps between
+    // reads, the sender's bounded socket-write wait would time out, and the transfer
+    // would stall part-way (the "no progress for 30s" failure). Eager draining keeps the
+    // sender's window open so it streams the whole file without aborting.
+    void drainLoop() {
+        while (!stop.load()) {
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                if (!transport) return;
+                sm::net::FileChannel::receiveAvailable(*transport, receiver);
+                if (receiver.allComplete()) {
+                    if (!loggedDone) {
+                        loggedDone = true;
+                        sm::log::write("[file] pull COMPLETE from " + sourceId);
+                    }
+                    if (transport->isConnected()) transport->close(); // free the source
+                    return;                                           // buffer persists
                 }
-                if (transport->isConnected()) transport->close();
+                if (!transport->isConnected()) {
+                    failed = true;
+                    sm::log::write("[file] pull FAILED: " + sourceId + " closed early");
+                    return;
+                }
             }
-            if (!transport->isConnected() && !(receiver.fileCount() > index &&
-                                               receiver.received(index) > offset)) {
-                failed = true;
-                sm::log::write("[file] pull FAILED: " + sourceId + " closed early (file " +
-                               std::to_string(index) + ": got " +
-                               std::to_string(haveFile ? receiver.received(index) : 0) + "/" +
-                               std::to_string(haveFile ? receiver.entry(index).size : 0) +
-                               " bytes)");
-                return -1; // source closed before delivering the requested bytes
+            Sleep(2); // ~500 Hz: keeps the sender's socket buffer drained, well under its
+                      // 100 ms write-wait, without a busy spin
+        }
+    }
+
+    // Serve bytes of file `index` at `offset` from the buffer the drain loop fills;
+    // returns bytes copied, 0 at EOF, -1 on failure/timeout. Never holds mtx while
+    // waiting, so the drain loop keeps running.
+    int read(uint32_t index, uint64_t offset, uint8_t* buf, uint32_t cap) {
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            if (failed) return -1;
+            if (!ensureConnected()) return -1; // dials + starts the drain loop (once)
+        }
+        uint64_t lastProgressMs = GetTickCount64();
+        std::size_t lastHave = 0;
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                if (failed) return -1;
+                const bool haveFile = receiver.fileCount() > index;
+                const std::size_t have = haveFile ? receiver.received(index) : 0;
+                if (offset < have) {
+                    std::size_t avail = have - static_cast<std::size_t>(offset);
+                    std::size_t n = avail < cap ? avail : cap;
+                    std::memcpy(buf, receiver.data(index).data() + offset, n);
+                    return static_cast<int>(n);
+                }
+                if (haveFile && receiver.complete(index) && offset >= have) return 0; // EOF
+                if (have != lastHave) { // the drain loop delivered more bytes -> progress
+                    lastHave = have;
+                    lastProgressMs = GetTickCount64();
+                }
             }
-            if (GetTickCount64() > deadline) {
+            if (GetTickCount64() - lastProgressMs > 30000) { // 30 s with no new bytes
+                std::lock_guard<std::mutex> lk(mtx);
                 failed = true;
                 sm::log::write("[file] pull FAILED: no progress for 30s from " + sourceId);
                 return -1;
