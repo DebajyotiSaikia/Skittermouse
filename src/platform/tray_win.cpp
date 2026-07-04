@@ -96,7 +96,7 @@ struct AppState {
     std::array<uint8_t, 32> protKey{};
     std::thread netThread;
     std::thread pairThread;
-    std::thread discoveryThread;  // broadcast + listen for beacons during pairing
+    std::thread discoveryThread;  // always-on presence beacon + reconnect IP refresh (spec 6)
     std::thread pairAcceptThread; // accept an inbound pairing while pairing mode is on
     std::atomic<bool> netRunning{false};
     std::atomic<bool> pairingActive{false};
@@ -609,22 +609,22 @@ void discoveryProc() {
     unsigned bcastCount = 0, peerCount = 0, rawCount = 0, decodeFail = 0, selfCount = 0,
              timeouts = 0, sockErrs = 0;
     bool lastBcastOk = true;
-    while (g_app->pairingActive.load()) {
+    while (g_app->netRunning.load()) { // always-on presence + reconnect refresh (spec 6)
         const uint64_t now = GetTickCount64();
         if (now - lastBroadcast >= 400) { // broadcast ~2x/sec
             std::string report;
             bool ok = sm::net::broadcastBeacon(self, kDiscoveryPort, &report);
             ++bcastCount;
             lastBroadcast = now;
-            if (now - lastReportLog >= 5000 || ok != lastBcastOk) {
+            if (now - lastReportLog >= 30000 || ok != lastBcastOk) {
                 sm::log::write(std::string("[disco] broadcast ok=") + (ok ? "1" : "0") + report);
                 lastReportLog = now;
                 lastBcastOk = ok;
             }
         }
-        // Every ~10 s: full window breakdown. rawPkts=0 proves nothing reaches this
+        // Every ~60 s: full window breakdown. rawPkts=0 proves nothing reaches this
         // socket (corp outbound / Wi-Fi); rawPkts>0 with peer>0 proves it does.
-        if (now - lastIfLog >= 10000) {
+        if (now - lastIfLog >= 60000) {
             sm::log::write("[disco] window broadcasts=" + std::to_string(bcastCount) +
                            " rawPkts=" + std::to_string(rawCount) +
                            " peer=" + std::to_string(peerCount) +
@@ -668,6 +668,33 @@ void discoveryProc() {
             {
                 std::lock_guard<std::mutex> lk(g_app->discMutex);
                 g_app->discovered.onBeacon(in, GetTickCount64());
+            }
+            // Reconnect refresh (spec 6): if this beacon is from a PAIRED device whose
+            // IP changed (DHCP handed out a new lease), update its stored dial address
+            // so netThreadProc reconnects to the new IP instead of the stale one. This
+            // is what makes auto-reconnect survive a router reassigning addresses.
+            if (!in.ip.empty()) {
+                bool changed = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_app->stateMutex);
+                    for (auto& d : g_app->config.devices) {
+                        if (d.id == in.machine_id && d.last_ip != in.ip) {
+                            sm::log::write("[disco] paired " + d.id + " IP " +
+                                           (d.last_ip.empty() ? std::string("(none)") : d.last_ip) +
+                                           " -> " + in.ip + " (reconnecting)");
+                            d.last_ip = in.ip;
+                            changed = true;
+                        }
+                    }
+                    if (changed) {
+                        std::string cp = configPath();
+                        if (!cp.empty()) g_app->config.saveToFile(cp); // survive restart
+                    }
+                }
+                if (changed) {
+                    std::lock_guard<std::mutex> lk(g_app->connMutex);
+                    g_app->peerIp[in.machine_id] = in.ip;
+                }
             }
             const uint64_t t = GetTickCount64();
             auto it = lastRecvLog.find(in.machine_id);
@@ -1095,8 +1122,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                 if (g_app->pairingActive.load()) {
                     showToast(L"Skittermouse", L"Pairing already in progress\u2026");
                 } else {
-                    // Join any previous session's threads before starting a new one.
-                    if (g_app->discoveryThread.joinable()) g_app->discoveryThread.join();
+                    // Join any previous session's pairing threads before starting a new
+                    // one. Discovery is always-on (started at launch), so it is no longer
+                    // part of the pairing-session lifecycle.
                     if (g_app->pairAcceptThread.joinable()) g_app->pairAcceptThread.join();
                     if (g_app->pairThread.joinable()) g_app->pairThread.join();
                     {
@@ -1105,7 +1133,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                     }
                     g_app->pairEngaged.store(false);
                     g_app->pairingActive.store(true);
-                    g_app->discoveryThread = std::thread(discoveryProc);
                     g_app->pairAcceptThread = std::thread(pairAcceptProc);
 
                     std::string ip, name;
@@ -1435,6 +1462,7 @@ int runTrayApp() {
     app.netThread = std::thread(netThreadProc);
     app.fileThread = std::thread(fileServeThreadProc); // on-demand /files server (spec 9)
     app.pumpThread = std::thread(pumpTickerProc, hwnd); // ~200 Hz coalesced mesh pump
+    app.discoveryThread = std::thread(discoveryProc);   // always-on presence + reconnect (spec 6)
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
