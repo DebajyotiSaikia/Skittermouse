@@ -32,6 +32,17 @@ namespace {
 
 inline void tlog(const std::string& m) { sm::log::write("[tls] " + m); }
 
+// TLS (Schannel) toggle for the Windows transport. Currently OFF: the app already
+// encrypts every message with AES-256-GCM (net/encrypted_transport) and pairing is
+// gated by the 6-digit numeric comparison, so the transport-level TLS is redundant.
+// The Schannel path below was written without real-hardware validation and was found
+// to break the connect()/accept() handshake in the field (TCP succeeds, TLS stalls ->
+// "could not reach"). Keep the code for when it can be debugged on real PCs, but leave
+// it disabled so plain-WS + app-layer GCM (the validated path) is used. NOTE: the peer
+// must match -- the macOS/POSIX transport still does TLS, so a Win<->Mac pair needs
+// this flipped back on together once Schannel is verified.
+constexpr bool kWinTls = false;
+
 // Start WinSock once for the process (OS ref-counts; cleaned up at process exit).
 struct WsaInit {
     WsaInit() {
@@ -343,14 +354,18 @@ public:
         }
         freeaddrinfo(res);
 
-        // TLS first (spec 5.1: wss://). Socket is blocking here so the SSPI token
-        // exchange runs to completion; the WS HTTP handshake then rides over TLS.
-        if (!tls_.clientHandshake(sock_, host)) {
-            tlog("client TLS handshake failed to " + host);
-            close();
-            return false;
+        // TLS first (spec 5.1: wss://) when enabled. Socket is blocking here so the
+        // SSPI token exchange runs to completion; the WS HTTP handshake then rides over
+        // TLS. Disabled by default (kWinTls) -- see the flag comment; app-layer AES-GCM
+        // still encrypts everything.
+        if constexpr (kWinTls) {
+            if (!tls_.clientHandshake(sock_, host)) {
+                tlog("client TLS handshake failed to " + host);
+                close();
+                return false;
+            }
+            tlsActive_ = true;
         }
-        tlsActive_ = true;
 
         std::string key = wsGenerateClientKey();
         std::string req = wsBuildClientHandshake(host + ":" + portStr, "/input", key);
@@ -407,14 +422,16 @@ public:
         connected_ = false;
     }
 
-    // Server-side post-accept sequence: TLS handshake, then the WS HTTP handshake
-    // over TLS. Called by wsAcceptOne on the accepted (blocking) socket.
+    // Server-side post-accept sequence: TLS handshake (when enabled), then the WS HTTP
+    // handshake. Called by wsAcceptOne on the accepted (blocking) socket.
     bool acceptServerSide() {
-        if (!tls_.serverHandshake(sock_)) {
-            tlog("server TLS handshake failed");
-            return false;
+        if constexpr (kWinTls) {
+            if (!tls_.serverHandshake(sock_)) {
+                tlog("server TLS handshake failed");
+                return false;
+            }
+            tlsActive_ = true;
         }
-        tlsActive_ = true;
         std::string req;
         char c;
         while (req.find("\r\n\r\n") == std::string::npos) {
