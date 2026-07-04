@@ -2,8 +2,10 @@
 
 #include "loopback_transport.h"
 
+#include "crypto/crypto.h"
 #include "pairing/pairing_exchange.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -40,7 +42,8 @@ void run_pairing_exchange_tests() {
         SM_CHECK(a.psk() == b.psk());        // same long-term key on both sides
     }
 
-    // A message claiming our own id is rejected (no self-pairing).
+    // A reveal claiming our own id is rejected (no self-pairing). Both sides must be
+    // pumped so the round-2 reveal (which carries the id) is actually exchanged.
     {
         smtest::LoopbackPair link;
         pairing::PairingExchange a(link.a, "SOLO");
@@ -48,8 +51,10 @@ void run_pairing_exchange_tests() {
         SM_CHECK(a.start());
         SM_CHECK(evil.start());
         pairing::PairingExchange::Status sa = pairing::PairingExchange::Status::NeedMore;
-        for (int i = 0; i < 5 && sa == pairing::PairingExchange::Status::NeedMore; ++i)
+        for (int i = 0; i < 5 && sa == pairing::PairingExchange::Status::NeedMore; ++i) {
             sa = a.poll();
+            evil.poll(); // pump so evil sends its reveal (id = SOLO)
+        }
         SM_CHECK(sa == pairing::PairingExchange::Status::Error);
     }
 
@@ -66,26 +71,65 @@ void run_pairing_exchange_tests() {
         SM_CHECK(e.poll() == pairing::PairingExchange::Status::Error);
     }
 
-    // A malformed inbound message (length doesn't match [idlen][id][64-byte point])
-    // is rejected cleanly.
+    // A first message that isn't exactly a 32-byte commitment is rejected cleanly.
     {
         smtest::LoopbackPair link;
         pairing::PairingExchange a(link.a, "A");
-        const uint8_t bad[] = {5, 'a', 'b', 'c', 'd', 'e'}; // claims idlen 5, no point
+        const uint8_t bad[] = {5, 'a', 'b', 'c', 'd', 'e'}; // 6 bytes, not a commitment
         link.b.send(bad, sizeof(bad));
         SM_CHECK(a.poll() == pairing::PairingExchange::Status::Error);
     }
 
-    // A well-framed message with an INVALID public point fails the ECDH step.
+    // Helpers to hand-craft a peer's round-1 commitment and round-2 reveal.
+    auto makeCommit = [](const std::vector<uint8_t>& pub, const std::vector<uint8_t>& nonce,
+                         const std::string& id) {
+        std::vector<uint8_t> c;
+        c.insert(c.end(), pub.begin(), pub.end());
+        c.insert(c.end(), nonce.begin(), nonce.end());
+        c.insert(c.end(), id.begin(), id.end());
+        return sm::crypto::sha256(c.data(), c.size());
+    };
+    auto makeReveal = [](const std::vector<uint8_t>& pub, const std::vector<uint8_t>& nonce,
+                         const std::string& id) {
+        std::vector<uint8_t> m;
+        m.push_back(static_cast<uint8_t>(id.size()));
+        m.insert(m.end(), id.begin(), id.end());
+        m.insert(m.end(), pub.begin(), pub.end());
+        m.insert(m.end(), nonce.begin(), nonce.end());
+        return m;
+    };
+
+    // A reveal that MATCHES its commitment but carries an invalid EC point still fails
+    // at the ECDH step (commitment gate passed, key agreement did not).
     {
         smtest::LoopbackPair link;
         pairing::PairingExchange a(link.a, "A");
-        std::vector<uint8_t> msg;
+        SM_CHECK(a.start());
+        const std::vector<uint8_t> badPub(64, 0x00); // not a valid P-256 point
+        const std::vector<uint8_t> nonce(32, 0x11);
         const std::string peer = "BADPT";
-        msg.push_back(static_cast<uint8_t>(peer.size()));
-        msg.insert(msg.end(), peer.begin(), peer.end());
-        msg.insert(msg.end(), 64, 0x00); // 64 zero bytes: not a valid EC point
-        link.b.send(msg.data(), msg.size());
-        SM_CHECK(a.poll() == pairing::PairingExchange::Status::Error);
+        auto commit = makeCommit(badPub, nonce, peer);
+        link.b.send(commit.data(), commit.size());
+        SM_CHECK(a.poll() == pairing::PairingExchange::Status::NeedMore); // stored commit, sent reveal
+        auto reveal = makeReveal(badPub, nonce, peer);
+        link.b.send(reveal.data(), reveal.size());
+        SM_CHECK(a.poll() == pairing::PairingExchange::Status::Error); // ECDH fails
+    }
+
+    // Anti-grinding gate: a reveal whose (pub,nonce,id) does NOT hash to the round-1
+    // commitment is rejected -- this is what stops a MITM grinding the 6-digit code.
+    {
+        smtest::LoopbackPair link;
+        pairing::PairingExchange a(link.a, "A");
+        SM_CHECK(a.start());
+        const std::vector<uint8_t> pub(64, 0x02);
+        const std::vector<uint8_t> nonce1(32, 0x11), nonce2(32, 0x22);
+        const std::string peer = "EVIL";
+        auto commit = makeCommit(pub, nonce1, peer); // commit to nonce1...
+        link.b.send(commit.data(), commit.size());
+        SM_CHECK(a.poll() == pairing::PairingExchange::Status::NeedMore);
+        auto reveal = makeReveal(pub, nonce2, peer); // ...but reveal nonce2
+        link.b.send(reveal.data(), reveal.size());
+        SM_CHECK(a.poll() == pairing::PairingExchange::Status::Error); // commitment mismatch
     }
 }

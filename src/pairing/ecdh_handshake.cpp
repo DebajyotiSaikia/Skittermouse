@@ -19,6 +19,13 @@ std::string EcdhHandshake::verificationCode() const {
     return sm::pairing::verificationCode(shared_.data(), shared_.size());
 }
 
+std::string EcdhHandshake::verificationCode(const sm::crypto::Bytes& saltA,
+                                            const sm::crypto::Bytes& saltB) const {
+    if (!hasShared()) return std::string();
+    return sm::pairing::verificationCode(shared_.data(), shared_.size(), saltA.data(),
+                                         saltA.size(), saltB.data(), saltB.size());
+}
+
 bool EcdhHandshake::derivePsk(const std::string& idA, const std::string& idB,
                               std::array<uint8_t, 32>& pskOut) const {
     if (!hasShared()) return false;

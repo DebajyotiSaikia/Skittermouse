@@ -26,6 +26,11 @@ public:
     // 6-digit code both humans compare (requires hasShared()).
     std::string verificationCode() const;
 
+    // Commitment-bound code that also folds in both sides' pairing nonces (spec 7.1
+    // anti-grinding). saltA/saltB are the two nonces in either order.
+    std::string verificationCode(const sm::crypto::Bytes& saltA,
+                                 const sm::crypto::Bytes& saltB) const;
+
     // Long-term PSK = HKDF(shared, salt = sorted(idA,idB), info) -> 32 bytes.
     // Sorting the ids makes both machines derive the same key regardless of who
     // initiated. Returns false unless a shared secret exists.
