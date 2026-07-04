@@ -522,9 +522,15 @@ void pairAcceptProc() {
         sm::log::write("[pair] inbound pairing connection accepted");
         if (g_app->discoveryDlg) PostMessageW(g_app->discoveryDlg, WM_CLOSE, 0, 0);
         runPairingSession(*t, ""); // peer dialed us; it will dial the mesh port too
-        break;
+        endPairingSession();       // we accepted AND ran the session -> end it here
+        return;
     }
-    endPairingSession();
+    // The loop exited WITHOUT us accepting a connection: either the session already
+    // ended, or THIS machine became the initiator (pairInitProc set pairEngaged and now
+    // owns the session lifetime). Do NOT end the session here -- pairInitProc's connect
+    // loop is gated on pairingActive, so ending it now is a race that kills the dial
+    // before it starts (the "[pair] could not reach" the instant after "[pair]
+    // initiating", with a "[disco] stop" wedged between them).
 }
 
 // Presence: broadcast our beacon and listen for others on the discovery port while
