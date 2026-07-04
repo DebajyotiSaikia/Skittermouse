@@ -788,19 +788,32 @@ struct FilePullSession {
     sm::net::FileReceiver receiver;
     bool failed = false;
     bool dialed = false;
+    bool loggedDone = false;
 
     // Open the secure /files link to the source (once).
     bool ensureConnected() {
         if (dialed) return transport != nullptr;
         dialed = true;
-        if (sourceIp.empty() || !hasKey) { failed = true; return false; }
+        if (sourceIp.empty() || !hasKey) {
+            failed = true;
+            sm::log::write("[file] pull aborted: no IP/key for " + sourceId);
+            return false;
+        }
         std::unique_ptr<sm::net::Transport> raw(sm::net::createWsClientTransport());
-        if (!raw || !raw->connect(sourceIp, kFilePort)) { failed = true; return false; }
+        if (!raw || !raw->connect(sourceIp, kFilePort)) {
+            failed = true;
+            sm::log::write("[file] pull dial FAILED to " + sourceIp + " (source offline?)");
+            return false;
+        }
         sm::pairing::KeyStore tmp;
         tmp.setPsk(sourceId, psk);
         sm::app::SecureLink link =
             sm::app::secureOutbound(std::move(raw), tmp, g_app->self, sourceId);
-        if (!link.transport) { failed = true; return false; }
+        if (!link.transport) {
+            failed = true;
+            sm::log::write("[file] pull secure-link FAILED to " + sourceId + " (PSK mismatch?)");
+            return false;
+        }
         transport = std::move(link.transport);
         sm::log::write("[file] pulling from " + sourceId + " at " + sourceIp);
         return true;
@@ -826,13 +839,28 @@ struct FilePullSession {
             sm::net::FileChannel::receiveAvailable(*transport, receiver);
             // Once every byte is buffered locally, close the source socket so its serve
             // loop is freed immediately; the buffer persists, so later reads still work.
-            if (receiver.allComplete() && transport->isConnected()) transport->close();
+            if (receiver.allComplete()) {
+                if (!loggedDone) {
+                    loggedDone = true;
+                    sm::log::write("[file] pull COMPLETE from " + sourceId);
+                }
+                if (transport->isConnected()) transport->close();
+            }
             if (!transport->isConnected() && !(receiver.fileCount() > index &&
                                                receiver.received(index) > offset)) {
                 failed = true;
+                sm::log::write("[file] pull FAILED: " + sourceId + " closed early (file " +
+                               std::to_string(index) + ": got " +
+                               std::to_string(haveFile ? receiver.received(index) : 0) + "/" +
+                               std::to_string(haveFile ? receiver.entry(index).size : 0) +
+                               " bytes)");
                 return -1; // source closed before delivering the requested bytes
             }
-            if (GetTickCount64() > deadline) { failed = true; return -1; }
+            if (GetTickCount64() > deadline) {
+                failed = true;
+                sm::log::write("[file] pull FAILED: no progress for 30s from " + sourceId);
+                return -1;
+            }
             Sleep(2);
         }
     }
@@ -844,6 +872,10 @@ struct FilePullSession {
 void onRemoteFilePromiseUi(const sm::core::PeerId& from,
                            const std::vector<sm::net::FilePromiseItem>& files) {
     if (files.empty()) return;
+    uint64_t totalBytes = 0;
+    for (const auto& f : files) totalBytes += f.size;
+    sm::log::write("[file] promise from " + from + ": " + std::to_string(files.size()) +
+                   " file(s), " + std::to_string(totalBytes) + " bytes");
     auto session = std::make_shared<FilePullSession>();
     session->sourceId = from;
     {
@@ -1243,9 +1275,11 @@ int runTrayApp() {
     // Connection state (spec 15): one-time balloon on drop/return, never repeating
     // (the transition callbacks fire exactly once per change).
     app.mesh->onPeerOffline = [](const sm::core::PeerId& id) {
+        sm::log::write("[net] peer OFFLINE: " + id + " (heartbeat lost)");
         showToast(L"Skittermouse", L"Lost connection to " + toWide(id));
     };
     app.mesh->onPeerOnline = [](const sm::core::PeerId& id) {
+        sm::log::write("[net] peer ONLINE: " + id);
         showToast(L"Skittermouse", L"Connected to " + toWide(id));
     };
     // Switch-to-unreachable (spec 15/12): if the target is WoL-plausible and has a
