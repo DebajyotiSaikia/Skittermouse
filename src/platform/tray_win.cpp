@@ -29,6 +29,7 @@
 #include "pairing/pairing_dialog.h"
 #include "pairing/pairing_exchange.h"
 #include "platform/autostart.h"
+#include "platform/capture.h"
 #include "platform/clipboard.h"
 #include "platform/filepromise.h"
 #include "platform/filepromise_win.h"
@@ -79,6 +80,8 @@ struct AppState {
     std::unique_ptr<sm::app::MeshNode> mesh;
     std::unique_ptr<sm::app::ConnectionManager> cm;
     std::unique_ptr<sm::platform::Injector> injector;
+    std::unique_ptr<sm::platform::Capture> capture; // owner-side input capture (spec 3.1)
+    std::atomic<bool> driving{false};               // this PC is actively controlling a peer
     sm::core::WakeFlow wake; // Wake-on-LAN "Waking…" flow (spec 12)
     NOTIFYICONDATAW nid{};
     std::string self;
@@ -865,6 +868,57 @@ void onRemoteFilePromiseUi(const sm::core::PeerId& from,
         showToast(L"Skittermouse", L"Files from " + toWide(from) + L" ready to paste");
 }
 
+// --- Owner-side input capture (spec 3.1) ------------------------------------------
+// Forward locally-captured input to the mesh, which broadcasts it to every sink peer.
+// Runs only while THIS PC is actively driving a peer (g_app->driving) AND owns input.
+void captureSink(const sm::platform::CapturedEvent& e) {
+    if (!g_app || !g_app->mesh) return;
+    const uint32_t ts = static_cast<uint32_t>(GetTickCount64());
+    switch (e.kind) {
+        case sm::platform::CapturedEvent::MouseMove:
+            g_app->mesh->forwardMouseMove(static_cast<int16_t>(e.dx), static_cast<int16_t>(e.dy),
+                                          ts);
+            break;
+        case sm::platform::CapturedEvent::MouseButton:
+            g_app->mesh->forwardMouseButton(e.code, e.down, ts);
+            break;
+        case sm::platform::CapturedEvent::Key:
+            g_app->mesh->forwardKey(e.code, e.down, ts);
+            break;
+    }
+}
+
+// Reconcile the capture hooks with our driving state: install them only while we are
+// actively driving a peer AND own input; otherwise remove them and release any keys we
+// were tracking as held (stuck-key prevention, spec 4.4). UI thread only -- the hook
+// callback runs on the installing thread's message loop, so it can touch the mesh.
+void syncCapture() {
+    if (!g_app || !g_app->capture || !g_app->mesh) return;
+    if (!g_app->mesh->isLocalOwner()) g_app->driving.store(false); // a remote drives -> we're a sink
+    const bool want = g_app->driving.load() && g_app->mesh->isLocalOwner();
+    if (want && !g_app->capture->active()) {
+        g_app->capture->start(captureSink);
+        sm::log::write("[input] capture ON -> forwarding local input to peers");
+    } else if (!want && g_app->capture->active()) {
+        g_app->capture->stop();
+        g_app->mesh->releaseHeldKeys(static_cast<uint32_t>(GetTickCount64()));
+        sm::log::write("[input] capture OFF -> local input restored");
+    }
+}
+
+// Start driving a peer: this PC becomes the input owner and forwards to it. If the peer
+// is offline, fall through to the switch path so the WoL/unavailable flow runs.
+void controlPeer(const sm::core::PeerId& peerId) {
+    if (!g_app || !g_app->mesh) return;
+    if (!g_app->mesh->isPeerOnline(peerId)) {
+        g_app->mesh->requestSwitchTo(peerId); // offline -> onSwitchUnavailable (WoL, spec 12/15)
+        return;
+    }
+    g_app->mesh->requestSwitchTo(g_app->self); // become the owner (drive the sink peers)
+    g_app->driving.store(true);
+    syncCapture();
+    sm::log::write("[input] now controlling " + peerId);
+}
 
 void showMenu(HWND hwnd) {
     POINT pt;
@@ -982,8 +1036,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                 }
             } else if (id >= kIdDeviceBase && g_app->mesh) {
                 std::size_t idx = id - kIdDeviceBase;
-                if (idx < g_app->config.devices.size())
-                    g_app->mesh->requestSwitchTo(g_app->config.devices[idx].id);
+                if (idx < g_app->config.devices.size()) {
+                    if (g_app->driving.load()) {
+                        g_app->driving.store(false); // toggle off -> back to local control
+                        syncCapture();
+                        sm::log::write("[input] stopped controlling; local input restored");
+                    } else {
+                        controlPeer(g_app->config.devices[idx].id); // take control + capture
+                    }
+                }
             }
             return 0;
         }
@@ -996,7 +1057,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                 auto items = sm::ui::buildMachineMenu(g_app->config.devices, g_app->self,
                                                       g_app->mesh->owner(), online);
                 std::string sel = sm::ui::showPicker(items);
-                if (!sel.empty()) g_app->mesh->requestSwitchTo(sel);
+                if (!sel.empty()) controlPeer(sel);
             }
             return 0;
 
@@ -1015,6 +1076,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                     g_app->pendingLinks.clear();
                 }
                 g_app->cm->poll(now); // pumps mesh.poll + heartbeats
+                syncCapture();        // reconcile owner-side capture with driving state
 
                 // Resolve any in-progress Wake-on-LAN attempt (spec 12).
                 if (g_app->wake.isWaking()) {
@@ -1068,6 +1130,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
 
         case WM_DESTROY:
             KillTimer(hwnd, 1);
+            if (g_app->capture) g_app->capture->stop(); // remove hooks before teardown
             g_app->netRunning.store(false);
             g_app->pairingActive.store(false);
             if (g_app->netThread.joinable()) g_app->netThread.join();
@@ -1127,6 +1190,7 @@ int runTrayApp() {
     app.self = GetComputerNameA(nameBuf, &nameLen) ? std::string(nameBuf, nameLen)
                                                    : std::string("this-machine");
     app.injector.reset(sm::platform::createInjector());
+    app.capture.reset(sm::platform::createCapture()); // installed only while driving (spec 3.1)
     app.mesh = std::make_unique<sm::app::MeshNode>(app.self);
     app.mesh->setPriority(app.config.priority);
     sm::platform::Injector* inj = app.injector.get();
@@ -1148,6 +1212,7 @@ int runTrayApp() {
     };
     app.mesh->onOwnerChanged = [](const sm::core::PeerId& newOwner) {
         showToast(L"Skittermouse", L"Input owner is now " + toWide(newOwner));
+        syncCapture(); // start/stop local capture as this PC gains/loses ownership
     };
     // Connection state (spec 15): one-time balloon on drop/return, never repeating
     // (the transition callbacks fire exactly once per change).
