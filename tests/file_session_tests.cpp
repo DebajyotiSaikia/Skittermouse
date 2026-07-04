@@ -56,6 +56,40 @@ void run_file_session_tests() {
         SM_CHECK(r.data(1) == d2);
     }
 
+    // --- received() tracks contiguous arrived bytes, not buffer capacity -----
+    // Regression: the destination pull must serve only bytes that have actually
+    // arrived. data(i).size() is the FULL pre-allocated length from the moment meta
+    // is accepted, so the pull loop must use received(i) instead -- otherwise it hands
+    // Explorer zero-filled tails and, when the source closes its linger, fails the
+    // paste with a bogus "A disk error occurred during a read operation".
+    {
+        FileSender s;
+        Bytes data(1000);
+        for (std::size_t i = 0; i < data.size(); ++i) data[i] = static_cast<uint8_t>(i % 251);
+        s.addFile("big.bin", data);
+
+        FileReceiver r;
+        Bytes meta = s.meta();
+        SM_CHECK(r.acceptMeta(meta.data(), meta.size()));
+        SM_CHECK_EQ(r.data(0).size(), 1000u); // buffer pre-sized to full length...
+        SM_CHECK_EQ(r.received(0), 0u);       // ...but nothing received yet
+        SM_CHECK(!r.complete(0));
+
+        Bytes c1 = s.nextChunk(0, 256);
+        SM_CHECK(r.acceptChunk(c1.data(), c1.size()));
+        SM_CHECK_EQ(r.received(0), 256u); // only the first chunk is present
+        SM_CHECK(!r.complete(0));
+
+        for (;;) {
+            Bytes c = s.nextChunk(0, 256);
+            if (c.empty()) break;
+            SM_CHECK(r.acceptChunk(c.data(), c.size()));
+        }
+        SM_CHECK_EQ(r.received(0), 1000u);
+        SM_CHECK(r.complete(0));
+        SM_CHECK_EQ(r.received(99), 0u); // out-of-range index is safe
+    }
+
     // --- Malformed / out-of-bounds chunks are rejected ----------------------
     {
         FileSender s;

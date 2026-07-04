@@ -40,6 +40,9 @@ public:
     std::size_t fileCount() const { return entries_.size(); }
     const FileEntry& entry(std::size_t i) const { return entries_[i]; }
     const Bytes& data(std::size_t i) const { return buffers_[i]; }
+    // Contiguous bytes actually received so far for file i (chunks arrive in order),
+    // as opposed to data(i).size() which is the full pre-allocated buffer capacity.
+    std::size_t received(std::size_t i) const { return i < received_.size() ? received_[i] : 0; }
     bool complete(std::size_t i) const;
     bool allComplete() const;
 

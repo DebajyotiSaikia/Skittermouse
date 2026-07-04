@@ -59,6 +59,7 @@ namespace sm::platform {
 namespace {
 
 constexpr UINT kTrayCallback = WM_APP + 1;
+constexpr UINT kEscapeMsg = WM_APP + 2; // capture hook -> reclaim local control (spec 4/15)
 constexpr UINT kIdQuit = 40001;
 constexpr UINT kIdSettings = 40002;
 constexpr UINT kIdStartup = 40003;
@@ -763,10 +764,12 @@ void fileServeThreadProc() {
         if (snd.fileCount() == 0) continue;
         sm::log::write("[file] serving " + std::to_string(snd.fileCount()) + " file(s)");
         sm::net::FileChannel::sendAll(*link.transport, snd, 64 * 1024);
-        // Linger briefly so the peer drains before the socket closes.
-        for (int i = 0; i < 40 && link.transport->isConnected(); ++i) {
+        // Keep the socket open until the peer finishes reading and closes it (Explorer
+        // may still be pulling bytes for a large file). The peer closes as soon as it
+        // has every byte buffered; the generous cap guards a peer that never closes.
+        for (int i = 0; i < 12000 && link.transport->isConnected(); ++i) {
             uint8_t b[64];
-            if (link.transport->recv(b, sizeof(b)) < 0) break;
+            if (link.transport->recv(b, sizeof(b)) < 0) break; // peer closed -> done
             Sleep(25);
         }
     }
@@ -812,7 +815,7 @@ struct FilePullSession {
         const uint64_t deadline = GetTickCount64() + 30000; // 30 s no-progress budget
         for (;;) {
             const bool haveFile = receiver.fileCount() > index;
-            const std::size_t have = haveFile ? receiver.data(index).size() : 0;
+            const std::size_t have = haveFile ? receiver.received(index) : 0; // bytes truly here
             if (offset < have) {
                 std::size_t avail = have - static_cast<std::size_t>(offset);
                 std::size_t n = avail < cap ? avail : cap;
@@ -821,8 +824,11 @@ struct FilePullSession {
             }
             if (haveFile && receiver.complete(index) && offset >= have) return 0; // EOF
             sm::net::FileChannel::receiveAvailable(*transport, receiver);
+            // Once every byte is buffered locally, close the source socket so its serve
+            // loop is freed immediately; the buffer persists, so later reads still work.
+            if (receiver.allComplete() && transport->isConnected()) transport->close();
             if (!transport->isConnected() && !(receiver.fileCount() > index &&
-                                               receiver.data(index).size() > offset)) {
+                                               receiver.received(index) > offset)) {
                 failed = true;
                 return -1; // source closed before delivering the requested bytes
             }
@@ -1061,6 +1067,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             }
             return 0;
 
+        case kEscapeMsg: // capture hook saw the reclaim chord while driving a peer
+            if (g_app->driving.load()) {
+                g_app->driving.store(false);
+                syncCapture(); // stop swallowing + release held keys on the peer (spec 4.4)
+                sm::log::write("[input] reclaim chord -> local control restored");
+            }
+            return 0;
+
         case WM_TIMER: {
             if (g_app->cm) {
                 uint64_t now = GetTickCount64();
@@ -1076,6 +1090,18 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                     g_app->pendingLinks.clear();
                 }
                 g_app->cm->poll(now); // pumps mesh.poll + heartbeats
+                // Owner-side fail-safe (spec 15): if we're driving but every peer went
+                // offline (crash, Wi-Fi drop, lid closed), auto-release -- never leave
+                // the user with a swallowed mouse/keyboard and nothing receiving it.
+                if (g_app->driving.load()) {
+                    bool anyOnline = false;
+                    for (const auto& d : g_app->config.devices)
+                        if (g_app->mesh->isPeerOnline(d.id)) { anyOnline = true; break; }
+                    if (!anyOnline) {
+                        g_app->driving.store(false);
+                        sm::log::write("[input] all peers offline -> local control restored (failsafe)");
+                    }
+                }
                 syncCapture();        // reconcile owner-side capture with driving state
 
                 // Resolve any in-progress Wake-on-LAN attempt (spec 12).
@@ -1308,6 +1334,17 @@ int runTrayApp() {
             wcscpy_s(tip.szTip, L"Skittermouse (hotkey: Ctrl+Shift+Alt+Space)");
             Shell_NotifyIconW(NIM_MODIFY, &tip);
         }
+    }
+
+    // Owner-side capture reclaim + swallow (spec 3.1/4). While driving a peer the
+    // captured keys are swallowed, so the global RegisterHotKey above can't fire --
+    // the capture hook itself watches for the same combo and reclaims local control.
+    if (app.capture) {
+        auto esc = sm::core::parseHotkey(app.config.settings.hotkey);
+        if (!esc.valid) esc = sm::core::parseHotkey("Ctrl+Alt+Space");
+        app.capture->setEscape(esc.modifiers, esc.key,
+                               [hwnd]() { PostMessageW(hwnd, kEscapeMsg, 0, 0); });
+        app.capture->setSwallow(true); // driving = true KVM (no local echo)
     }
 
     // Start the background network I/O thread (dials paired peers + accepts inbound).
