@@ -77,6 +77,12 @@ struct PendingLink {
     bool outbound;
 };
 
+// A queued request to publish a delay-render file promise on the dedicated OLE thread.
+struct PromiseRequest {
+    std::vector<sm::platform::PromisedFile> files;
+    sm::platform::FileByteSource source;
+};
+
 struct AppState {
     sm::core::Config config;
     std::unique_ptr<sm::app::MeshNode> mesh;
@@ -119,6 +125,10 @@ struct AppState {
     std::thread fileThread; // accepts + serves the /files channel
     std::thread pumpThread;                 // high-rate mesh-pump ticker (spec 5.1)
     std::atomic<bool> pumpScheduled{false}; // coalesces pump ticks (<=1 outstanding)
+    std::thread promiseThread;              // dedicated OLE/STA thread for file promises (spec 9)
+    HANDLE promiseEvent = nullptr;          // auto-reset: signals queued promise work
+    std::mutex promiseMutex;                // guards promiseQueue
+    std::vector<PromiseRequest*> promiseQueue;
 };
 
 AppState* g_app = nullptr;
@@ -925,6 +935,41 @@ struct FilePullSession {
     }
 };
 
+// Dedicated OLE (STA) thread for the delay-rendered file promise (spec 9). Explorer
+// marshals IStream::Read to the apartment that OWNS the clipboard data object; hosting
+// that here rather than on the UI thread means a slow network pull blocks only THIS
+// thread. Otherwise the pull would block the UI thread -- where the mesh pump and
+// heartbeat live -- the peer would miss heartbeats within ~1-2 s and declare us offline,
+// and the input link would drop mid-transfer.
+void promiseThreadProc() {
+    OleInitialize(nullptr); // this thread's STA owns the promise clipboard object
+    while (g_app && g_app->netRunning.load()) {
+        const DWORD r =
+            MsgWaitForMultipleObjects(1, &g_app->promiseEvent, FALSE, INFINITE, QS_ALLINPUT);
+        if (r == WAIT_OBJECT_0) {
+            std::vector<PromiseRequest*> batch;
+            {
+                std::lock_guard<std::mutex> lk(g_app->promiseMutex);
+                batch.swap(g_app->promiseQueue);
+            }
+            for (auto* req : batch) {
+                if (!sm::platform::putFilePromiseOnClipboard(req->files, std::move(req->source)))
+                    sm::log::write("[file] putFilePromiseOnClipboard failed");
+                delete req;
+            }
+        } else if (r == WAIT_OBJECT_0 + 1) {
+            // Explorer's marshaled IStream::Read is dispatched here -- and may block this
+            // thread for the whole pull, which is exactly the point.
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+    OleUninitialize();
+}
+
 // Called on the UI thread when a peer announces copied files: build a delay-render
 // promise whose bytes pull from that peer over the /files channel, and put it on the
 // local clipboard so a paste in Explorer materialises them with native progress UI.
@@ -961,8 +1006,16 @@ void onRemoteFilePromiseUi(const sm::core::PeerId& from,
                                                     uint32_t cap) -> int {
         return session->read(index, offset, buf, cap);
     };
-    if (sm::platform::putFilePromiseOnClipboard(promised, std::move(source)))
-        showToast(L"Skittermouse", L"Files from " + toWide(from) + L" ready to paste");
+    // Publish on the dedicated OLE thread, NOT here: Explorer marshals IStream::Read to
+    // the clipboard-owning apartment, and a slow pull there must not run on the UI thread
+    // or it starves the mesh pump/heartbeat and the input link drops mid-transfer (spec 9).
+    auto* req = new PromiseRequest{std::move(promised), std::move(source)};
+    {
+        std::lock_guard<std::mutex> lk(g_app->promiseMutex);
+        g_app->promiseQueue.push_back(req);
+    }
+    if (g_app->promiseEvent) SetEvent(g_app->promiseEvent);
+    showToast(L"Skittermouse", L"Files from " + toWide(from) + L" ready to paste");
 }
 
 // --- Owner-side input capture (spec 3.1) ------------------------------------------
@@ -1272,6 +1325,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             if (g_app->pairAcceptThread.joinable()) g_app->pairAcceptThread.join();
             if (g_app->fileThread.joinable()) g_app->fileThread.join();
             if (g_app->pumpThread.joinable()) g_app->pumpThread.join();
+            if (g_app->promiseEvent) SetEvent(g_app->promiseEvent); // wake the OLE thread to exit
+            if (g_app->promiseThread.joinable()) g_app->promiseThread.join();
+            if (g_app->promiseEvent) {
+                CloseHandle(g_app->promiseEvent);
+                g_app->promiseEvent = nullptr;
+            }
             RemoveClipboardFormatListener(hwnd);
             UnregisterHotKey(hwnd, kHotkeyId);
             Shell_NotifyIconW(NIM_DELETE, &g_app->nid);
@@ -1463,6 +1522,8 @@ int runTrayApp() {
     app.fileThread = std::thread(fileServeThreadProc); // on-demand /files server (spec 9)
     app.pumpThread = std::thread(pumpTickerProc, hwnd); // ~200 Hz coalesced mesh pump
     app.discoveryThread = std::thread(discoveryProc);   // always-on presence + reconnect (spec 6)
+    app.promiseEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr); // auto-reset promise signal
+    app.promiseThread = std::thread(promiseThreadProc); // dedicated OLE thread (spec 9)
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
