@@ -148,6 +148,44 @@ void run_net_tests() {
         if (received) SM_CHECK_EQ(got.machine_id, std::string("cov-id"));
     }
 
+    // --- Persistent receiver (bind-once poll) round-trip + RecvDiag ----------
+    // This is discovery's real receive path now. Uses the deterministic loopback
+    // unicast so it can't flake; asserts RecvDiag reports what the socket saw.
+    {
+        const uint16_t port = 47898;
+        Beacon self;
+        self.machine_name = "RX-HOST";
+        self.machine_id = "rx-id";
+        self.port = 47800;
+        self.os = 0;
+
+        std::string err;
+        BeaconReceiver* rx = openBeaconReceiver(port, &err);
+        SM_CHECK(rx != nullptr); // bind must succeed
+        if (rx) {
+            std::atomic<bool> stop{false};
+            std::thread sender([&] {
+                while (!stop.load()) {
+                    sendBeaconTo(self, "127.0.0.1", port);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+            });
+            Beacon got;
+            RecvDiag diag;
+            bool received = false;
+            for (int i = 0; i < 20 && !received; ++i) received = pollBeacon(rx, 300, got, &diag);
+            stop.store(true);
+            sender.join();
+            if (received) {
+                SM_CHECK_EQ(got.machine_id, std::string("rx-id"));
+                SM_CHECK(diag.bytes > 0);
+                SM_CHECK(diag.decoded);
+                SM_CHECK_EQ(diag.machineId, std::string("rx-id"));
+            }
+            closeBeaconReceiver(rx);
+        }
+    }
+
     // --- Discovery replies are LAN-only (no reflection to routed/public IPs) --
     {
         SM_CHECK(isPrivateIpv4("10.0.0.5"));

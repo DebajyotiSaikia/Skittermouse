@@ -223,32 +223,9 @@ bool isPrivateIpv4(const std::string& ip) {
     return isPrivateAddr(a.s_addr);
 }
 
-bool receiveBeacon(uint16_t port, int timeout_ms, Beacon& out, std::string* err) {
-    WsaScope wsa;
-    if (!wsa.ok) {
-        if (err) *err = "WSAStartup failed";
-        return false;
-    }
-
-    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s == INVALID_SOCKET) {
-        if (err) *err = "socket() failed err=" + std::to_string(lastSockErr());
-        return false;
-    }
-
-    int yes = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        if (err) *err = "bind(" + std::to_string(port) + ") failed err=" + std::to_string(lastSockErr());
-        closeSock(s);
-        return false;
-    }
-
+namespace {
+// Set the receive timeout on a socket (cross-platform).
+void setRcvTimeout(SOCKET s, int timeout_ms) {
 #ifdef _WIN32
     DWORD tv = static_cast<DWORD>(timeout_ms);
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
@@ -258,21 +235,122 @@ bool receiveBeacon(uint16_t port, int timeout_ms, Beacon& out, std::string* err)
     tv.tv_usec = (timeout_ms % 1000) * 1000;
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
+}
 
+// True if a recvfrom() error code means "the receive timeout elapsed" (not a real error).
+bool isTimeoutErr(int e) {
+#ifdef _WIN32
+    return e == WSAETIMEDOUT;
+#else
+    return e == EAGAIN || e == EWOULDBLOCK;
+#endif
+}
+
+// One recvfrom on an already-bound socket. Fills diag with exactly what was seen and
+// decodes a beacon into out (overriding out.ip with the real UDP source). Returns true
+// only for a successfully decoded beacon.
+bool recvDecodeOnce(SOCKET s, int timeout_ms, Beacon& out, RecvDiag* diag) {
+    setRcvTimeout(s, timeout_ms);
     uint8_t buf[2048];
     sockaddr_in from{};
     socklen_t fromLen = sizeof(from);
     int n = recvfrom(s, reinterpret_cast<char*>(buf), sizeof(buf), 0,
                      reinterpret_cast<sockaddr*>(&from), &fromLen);
-    closeSock(s);
+    char ipstr[INET_ADDRSTRLEN] = "";
+    if (n > 0) inet_ntop(AF_INET, &from.sin_addr, ipstr, sizeof(ipstr));
+    if (diag) {
+        diag->bytes = n;
+        diag->sockErr = (n < 0) ? lastSockErr() : 0;
+        diag->timedOut = (n < 0) && isTimeoutErr(diag->sockErr);
+        diag->srcIp = (n > 0) ? ipstr : std::string();
+        diag->decoded = false;
+        diag->machineId.clear();
+    }
     if (n <= 0) return false;
     if (!decodeBeacon(buf, static_cast<std::size_t>(n), out)) return false;
-    // The UDP source address is the address we can actually reach the peer at --
-    // more reliable than the sender's self-reported ip (multi-NIC, DHCP, etc.), so
-    // it wins. Presence only; pairing (spec 7) remains the security gate.
-    char ipstr[INET_ADDRSTRLEN] = "";
-    if (inet_ntop(AF_INET, &from.sin_addr, ipstr, sizeof(ipstr))) out.ip = ipstr;
+    // UDP source is the address we can actually reach the peer at -- beats the sender's
+    // self-reported ip (multi-NIC, DHCP, etc.). Presence only; pairing stays the gate.
+    if (ipstr[0]) out.ip = ipstr;
+    if (diag) {
+        diag->decoded = true;
+        diag->machineId = out.machine_id;
+    }
     return true;
+}
+} // namespace
+
+bool receiveBeacon(uint16_t port, int timeout_ms, Beacon& out, std::string* err) {
+    WsaScope wsa;
+    if (!wsa.ok) {
+        if (err) *err = "WSAStartup failed";
+        return false;
+    }
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) {
+        if (err) *err = "socket() failed err=" + std::to_string(lastSockErr());
+        return false;
+    }
+    int yes = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        if (err)
+            *err = "bind(" + std::to_string(port) + ") failed err=" + std::to_string(lastSockErr());
+        closeSock(s);
+        return false;
+    }
+    bool ok = recvDecodeOnce(s, timeout_ms, out, nullptr);
+    closeSock(s);
+    return ok;
+}
+
+// Persistent receiver: WsaScope + one bound socket, alive for the receiver's lifetime.
+struct BeaconReceiver {
+    WsaScope wsa;
+    SOCKET s = INVALID_SOCKET;
+};
+
+BeaconReceiver* openBeaconReceiver(uint16_t port, std::string* err) {
+    auto* r = new BeaconReceiver();
+    if (!r->wsa.ok) {
+        if (err) *err = "WSAStartup failed";
+        delete r;
+        return nullptr;
+    }
+    r->s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (r->s == INVALID_SOCKET) {
+        if (err) *err = "socket() failed err=" + std::to_string(lastSockErr());
+        delete r;
+        return nullptr;
+    }
+    int yes = 1;
+    setsockopt(r->s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(r->s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        if (err)
+            *err = "bind(" + std::to_string(port) + ") failed err=" + std::to_string(lastSockErr());
+        closeSock(r->s);
+        delete r;
+        return nullptr;
+    }
+    return r;
+}
+
+bool pollBeacon(BeaconReceiver* r, int timeout_ms, Beacon& out, RecvDiag* diag) {
+    if (!r || r->s == INVALID_SOCKET) return false;
+    return recvDecodeOnce(r->s, timeout_ms, out, diag);
+}
+
+void closeBeaconReceiver(BeaconReceiver* r) {
+    if (!r) return;
+    if (r->s != INVALID_SOCKET) closeSock(r->s);
+    delete r; // WsaScope dtor runs WSACleanup once
 }
 
 } // namespace sm::net

@@ -40,4 +40,25 @@ bool isPrivateIpv4(const std::string& ip);
 // so a listener that can never receive is visible in the log.
 bool receiveBeacon(uint16_t port, int timeout_ms, Beacon& out, std::string* err = nullptr);
 
+// Per-receive diagnostics: exactly what one recvfrom() saw. For logging why discovery
+// isn't receiving on a particular machine (packet arrived but undecodable vs nothing
+// arrived at all vs a socket error).
+struct RecvDiag {
+    int bytes = -1;         // recvfrom(): >=0 = datagram length, <0 = no packet
+    int sockErr = 0;        // socket error code when bytes<0
+    bool timedOut = false;  // bytes<0 specifically because the receive timeout elapsed
+    std::string srcIp;      // UDP source address when bytes>=0
+    bool decoded = false;   // decodeBeacon() succeeded
+    std::string machineId;  // decoded sender id when decoded
+};
+
+// Persistent beacon receiver: bind the port ONCE and poll it repeatedly, instead of
+// receiveBeacon()'s bind+close (and WSAStartup/WSACleanup) on every packet. That churn
+// can drop inbound datagrams that a long-lived socket receives fine, so discovery uses
+// this. openBeaconReceiver returns nullptr on bind failure (sets *err).
+struct BeaconReceiver;
+BeaconReceiver* openBeaconReceiver(uint16_t port, std::string* err = nullptr);
+bool pollBeacon(BeaconReceiver* r, int timeout_ms, Beacon& out, RecvDiag* diag = nullptr);
+void closeBeaconReceiver(BeaconReceiver* r);
+
 } // namespace sm::net

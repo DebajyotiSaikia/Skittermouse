@@ -549,10 +549,23 @@ void discoveryProc() {
             sm::log::write("[disco] WARNING no broadcast interfaces -- discovery cannot send");
     }
 
+    // Persistent receive socket: bind the port ONCE and poll it, instead of the old
+    // bind/close-every-packet churn (which dropped inbound datagrams a long-lived
+    // socket receives fine -- matches the raw UdpClient test that worked).
+    std::string operr;
+    sm::net::BeaconReceiver* rx = sm::net::openBeaconReceiver(kDiscoveryPort, &operr);
+    if (!rx)
+        sm::log::write("[disco] ERROR openBeaconReceiver failed: " + operr +
+                       " -- cannot receive (still broadcasting)");
+    else
+        sm::log::write("[disco] receiver bound 0.0.0.0:" + std::to_string(kDiscoveryPort));
+
     std::map<std::string, uint64_t> lastReply;   // per-peer unicast-reply throttle
-    std::map<std::string, uint64_t> lastRecvLog; // per-peer received-beacon log throttle
+    std::map<std::string, uint64_t> lastRecvLog; // per-peer beacon-log throttle
+    std::map<std::string, uint64_t> srcSeen;     // first raw packet per source IP
     uint64_t lastBroadcast = 0, lastReportLog = 0, lastIfLog = 0, lastErrLog = 0;
-    unsigned bcastCount = 0, recvCount = 0;
+    unsigned bcastCount = 0, peerCount = 0, rawCount = 0, decodeFail = 0, selfCount = 0,
+             timeouts = 0, sockErrs = 0;
     bool lastBcastOk = true;
     while (g_app->pairingActive.load()) {
         const uint64_t now = GetTickCount64();
@@ -561,59 +574,82 @@ void discoveryProc() {
             bool ok = sm::net::broadcastBeacon(self, kDiscoveryPort, &report);
             ++bcastCount;
             lastBroadcast = now;
-            // Log the send detail every ~5 s, or immediately when the ok-state flips.
             if (now - lastReportLog >= 5000 || ok != lastBcastOk) {
                 sm::log::write(std::string("[disco] broadcast ok=") + (ok ? "1" : "0") + report);
                 lastReportLog = now;
                 lastBcastOk = ok;
             }
         }
-        // Every ~10 s: window summary + re-log interfaces (catches a NIC up/down, and
-        // received=0 makes a one-way path obvious in the log).
+        // Every ~10 s: full window breakdown. rawPkts=0 proves nothing reaches this
+        // socket (corp outbound / Wi-Fi); rawPkts>0 with peer>0 proves it does.
         if (now - lastIfLog >= 10000) {
-            auto ifs = sm::net::describeLocalInterfaces();
             sm::log::write("[disco] window broadcasts=" + std::to_string(bcastCount) +
-                           " received=" + std::to_string(recvCount) +
-                           " interfaces=" + std::to_string(ifs.size()));
-            for (auto& s : ifs) sm::log::write("[disco]   " + s);
-            bcastCount = recvCount = 0;
+                           " rawPkts=" + std::to_string(rawCount) +
+                           " peer=" + std::to_string(peerCount) +
+                           " self=" + std::to_string(selfCount) +
+                           " decodeFail=" + std::to_string(decodeFail) +
+                           " timeouts=" + std::to_string(timeouts) +
+                           " sockErr=" + std::to_string(sockErrs));
+            bcastCount = peerCount = rawCount = decodeFail = selfCount = timeouts = sockErrs = 0;
             lastIfLog = now;
         }
+        if (!rx) {
+            Sleep(200);
+            continue;
+        }
+
+        sm::net::RecvDiag diag;
         sm::net::Beacon in;
-        std::string rerr;
-        if (sm::net::receiveBeacon(kDiscoveryPort, 250, in, &rerr)) {
-            if (in.machine_id != g_app->self) {
-                ++recvCount;
-                {
-                    std::lock_guard<std::mutex> lk(g_app->discMutex);
-                    g_app->discovered.onBeacon(in, GetTickCount64());
-                }
-                const uint64_t t = GetTickCount64();
-                // First sight of each machine logs immediately; repeats throttle to ~5 s.
-                auto it = lastRecvLog.find(in.machine_id);
-                if (it == lastRecvLog.end()) {
-                    sm::log::write("[disco] FIRST beacon from '" + in.machine_name +
-                                   "' id=" + in.machine_id + " ip=" + in.ip);
-                    lastRecvLog[in.machine_id] = t;
-                } else if (t - it->second >= 5000) {
-                    sm::log::write("[disco] beacon id=" + in.machine_id + " ip=" + in.ip);
-                    it->second = t;
-                }
-                // Unicast reply so the sender discovers us too (throttled to 700 ms).
-                uint64_t& lr = lastReply[in.machine_id];
-                if (!in.ip.empty() && (lr == 0 || t - lr >= 700)) {
-                    bool rok = sm::net::sendBeaconTo(self, in.ip, kDiscoveryPort);
-                    if (!rok || lr == 0 || t - lr >= 5000)
-                        sm::log::write(std::string("[disco] unicast-reply -> ") + in.ip + " ok=" +
-                                       (rok ? "1" : "0"));
-                    lr = t;
-                }
+        bool got = sm::net::pollBeacon(rx, 200, in, &diag);
+        if (diag.bytes >= 0) {
+            ++rawCount;
+            // Log the first packet seen from each distinct source IP -- this is the proof
+            // of whether corp's datagrams physically reach the desktop's socket.
+            if (!diag.srcIp.empty() && srcSeen.find(diag.srcIp) == srcSeen.end()) {
+                sm::log::write("[disco] rx " + std::to_string(diag.bytes) + "B from " + diag.srcIp +
+                               " decode=" + (diag.decoded ? "1" : "0") +
+                               (diag.decoded ? (" id=" + diag.machineId) : std::string()));
+                srcSeen[diag.srcIp] = now;
             }
-        } else if (!rerr.empty() && now - lastErrLog >= 5000) {
-            sm::log::write("[disco] receive error: " + rerr);
-            lastErrLog = now;
+            if (!diag.decoded) ++decodeFail;
+        } else if (diag.timedOut) {
+            ++timeouts;
+        } else {
+            ++sockErrs;
+            if (now - lastErrLog >= 5000) {
+                sm::log::write("[disco] poll sockErr=" + std::to_string(diag.sockErr));
+                lastErrLog = now;
+            }
+        }
+        if (got && in.machine_id != g_app->self) {
+            ++peerCount;
+            {
+                std::lock_guard<std::mutex> lk(g_app->discMutex);
+                g_app->discovered.onBeacon(in, GetTickCount64());
+            }
+            const uint64_t t = GetTickCount64();
+            auto it = lastRecvLog.find(in.machine_id);
+            if (it == lastRecvLog.end()) {
+                sm::log::write("[disco] FIRST beacon from '" + in.machine_name +
+                               "' id=" + in.machine_id + " ip=" + in.ip);
+                lastRecvLog[in.machine_id] = t;
+            } else if (t - it->second >= 5000) {
+                sm::log::write("[disco] beacon id=" + in.machine_id + " ip=" + in.ip);
+                it->second = t;
+            }
+            uint64_t& lr = lastReply[in.machine_id];
+            if (!in.ip.empty() && (lr == 0 || t - lr >= 700)) {
+                bool rok = sm::net::sendBeaconTo(self, in.ip, kDiscoveryPort);
+                if (!rok || lr == 0 || t - lr >= 5000)
+                    sm::log::write(std::string("[disco] unicast-reply -> ") + in.ip + " ok=" +
+                                   (rok ? "1" : "0"));
+                lr = t;
+            }
+        } else if (got) {
+            ++selfCount;
         }
     }
+    sm::net::closeBeaconReceiver(rx);
     sm::log::write("[disco] stop");
 }
 
