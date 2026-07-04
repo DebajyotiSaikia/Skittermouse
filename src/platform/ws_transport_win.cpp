@@ -32,6 +32,15 @@ struct WsaInit {
     }
 } g_wsaInit;
 
+// Disable Nagle so a single small input frame (a 12-byte mouse move) is sent
+// immediately rather than coalesced -- Nagle can add tens of ms of pointer lag on
+// the interactive input channel (spec 5.1).
+void setLowLatency(SOCKET s) {
+    BOOL nodelay = TRUE;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay),
+               sizeof(nodelay));
+}
+
 // One WebSocket transport over a connected TCP socket. Per RFC 6455, client-role
 // frames are masked and server-role (accepted) frames are not.
 class WinWsTransport : public Transport {
@@ -52,6 +61,7 @@ public:
         if (getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0) return false;
         sock_ = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
         if (sock_ == INVALID_SOCKET) { freeaddrinfo(res); return false; }
+        setLowLatency(sock_); // TCP_NODELAY: never coalesce tiny input packets (spec 5.1)
         // Non-blocking connect with a bounded timeout, so dialing an offline peer
         // can't stall the dial loop (or app shutdown) for the full OS SYN timeout.
         u_long nb = 1;

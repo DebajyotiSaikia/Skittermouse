@@ -60,6 +60,7 @@ namespace {
 
 constexpr UINT kTrayCallback = WM_APP + 1;
 constexpr UINT kEscapeMsg = WM_APP + 2; // capture hook -> reclaim local control (spec 4/15)
+constexpr UINT kPumpMsg = WM_APP + 3;   // high-rate mesh pump tick (low input latency)
 constexpr UINT kIdQuit = 40001;
 constexpr UINT kIdSettings = 40002;
 constexpr UINT kIdStartup = 40003;
@@ -116,6 +117,8 @@ struct AppState {
     std::vector<std::string> copiedPaths;
     std::mutex fileMutex;
     std::thread fileThread; // accepts + serves the /files channel
+    std::thread pumpThread;                 // high-rate mesh-pump ticker (spec 5.1)
+    std::atomic<bool> pumpScheduled{false}; // coalesces pump ticks (<=1 outstanding)
 };
 
 AppState* g_app = nullptr;
@@ -432,6 +435,35 @@ void netThreadProc() {
         }
         Sleep(50);
     }
+}
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002 // Win10 1803+; harmless if unused
+#endif
+
+// High-resolution mesh-pump ticker (spec 5.1). WM_TIMER tops out near 15 ms (~64 Hz),
+// is coalesced and low-priority -- far too coarse for smooth pointer/keyboard
+// forwarding. This thread posts a coalesced pump message ~every 5 ms (via a high-
+// resolution waitable timer when available) so the sink recv's + injects forwarded
+// input at ~200 Hz. It does no mesh work itself -- all logic stays on the UI thread --
+// and never floods the queue: at most one pump is outstanding (pumpScheduled).
+void pumpTickerProc(HWND hwnd) {
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr,
+                                          CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                          TIMER_ALL_ACCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = -50000; // 5 ms, in 100 ns units, relative
+    while (g_app && g_app->netRunning.load()) {
+        if (timer) {
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, 50);
+        } else {
+            Sleep(5); // fallback (~15 ms) where high-resolution timers are unavailable
+        }
+        if (!g_app->pumpScheduled.exchange(true))
+            PostMessageW(hwnd, kPumpMsg, 0, 0);
+    }
+    if (timer) CloseHandle(timer);
 }
 
 // --- Pairing (spec 7.1) -----------------------------------------------------------
@@ -958,6 +990,24 @@ void controlPeer(const sm::core::PeerId& peerId) {
     sm::log::write("[input] now controlling " + peerId);
 }
 
+// Drive the mesh one step: register any links the net thread produced, then recv +
+// inject + heartbeat. Called from the fast pump tick (kPumpMsg) and the 50 ms WM_TIMER
+// fallback -- both on the UI thread, so the mesh stays single-threaded.
+void pumpMesh() {
+    if (!g_app || !g_app->cm) return;
+    {
+        std::lock_guard<std::mutex> lk(g_app->linkMutex);
+        for (auto& pl : g_app->pendingLinks) {
+            if (pl.outbound)
+                g_app->cm->addOutgoing(pl.link.peerId, std::move(pl.link.transport));
+            else
+                g_app->cm->addIncoming(std::move(pl.link.transport));
+        }
+        g_app->pendingLinks.clear();
+    }
+    g_app->cm->poll(GetTickCount64());
+}
+
 void showMenu(HWND hwnd) {
     POINT pt;
     GetCursorPos(&pt);
@@ -1107,21 +1157,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             }
             return 0;
 
+        case kPumpMsg: {
+            // Coalesced high-rate mesh pump (spec 5.1): the ticker posts this ~every
+            // 5 ms so forwarded input is recv'd + injected at ~200 Hz instead of the old
+            // 20 Hz. At most one is queued at a time (pumpScheduled), so it can't flood.
+            g_app->pumpScheduled.store(false);
+            pumpMesh();
+            return 0;
+        }
+
         case WM_TIMER: {
             if (g_app->cm) {
                 uint64_t now = GetTickCount64();
-                // Drain sealed links produced by the network thread into the mesh.
-                {
-                    std::lock_guard<std::mutex> lk(g_app->linkMutex);
-                    for (auto& pl : g_app->pendingLinks) {
-                        if (pl.outbound)
-                            g_app->cm->addOutgoing(pl.link.peerId, std::move(pl.link.transport));
-                        else
-                            g_app->cm->addIncoming(std::move(pl.link.transport));
-                    }
-                    g_app->pendingLinks.clear();
-                }
-                g_app->cm->poll(now); // pumps mesh.poll + heartbeats
+                pumpMesh(); // 50 ms fallback pump (safety if the ticker ever stalls)
                 // Owner-side fail-safe (spec 15): if we're driving but every peer went
                 // offline (crash, Wi-Fi drop, lid closed), auto-release -- never leave
                 // the user with a swallowed mouse/keyboard and nothing receiving it.
@@ -1196,6 +1244,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             if (g_app->discoveryThread.joinable()) g_app->discoveryThread.join();
             if (g_app->pairAcceptThread.joinable()) g_app->pairAcceptThread.join();
             if (g_app->fileThread.joinable()) g_app->fileThread.join();
+            if (g_app->pumpThread.joinable()) g_app->pumpThread.join();
             RemoveClipboardFormatListener(hwnd);
             UnregisterHotKey(hwnd, kHotkeyId);
             Shell_NotifyIconW(NIM_DELETE, &g_app->nid);
@@ -1385,6 +1434,7 @@ int runTrayApp() {
     app.netRunning.store(true);
     app.netThread = std::thread(netThreadProc);
     app.fileThread = std::thread(fileServeThreadProc); // on-demand /files server (spec 9)
+    app.pumpThread = std::thread(pumpTickerProc, hwnd); // ~200 Hz coalesced mesh pump
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
