@@ -165,6 +165,17 @@ if(WIN32)
     # packaging/skittermouse.ico referenced by packaging/skittermouse.rc.
     target_sources(skittermouse PRIVATE packaging/skittermouse.rc)
     target_include_directories(skittermouse PRIVATE packaging)
+
+    # Run elevated by default (spec 13). A medium-integrity process cannot inject input
+    # into elevated (high-integrity) windows -- Windows UIPI silently drops it -- so the
+    # instant a target machine focuses an admin app (e.g. an elevated PowerShell) mouse/
+    # keyboard forwarding stops working there. Embed a requireAdministrator UAC manifest
+    # so EVERY launch is high-integrity, not just the /RL HIGHEST login task. The MSVC
+    # linker writes the execution level straight into the manifest it already generates.
+    if(MSVC)
+        set_target_properties(skittermouse PROPERTIES
+            LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\"")
+    endif()
 endif()
 
 # --- tests -------------------------------------------------------------------
