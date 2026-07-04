@@ -38,8 +38,8 @@ void setNonBlocking(int fd) {
 // --- TLS (spec 5.1: wss://) via OpenSSL for the macOS product + Linux test rig.
 // Peer identity is authenticated by the app-layer secure link (PSK), so TLS here is
 // encryption-only: the server presents an ephemeral self-signed cert and the client
-// does not verify it -- the PSK remains the trust gate (see the ws_transport_win.cpp
-// Schannel counterpart, which does the same).
+// does not verify it -- the PSK remains the trust gate. NOTE: the Windows backend now
+// runs plain WS (no transport TLS), so this must be reconciled before Win<->Mac pairing.
 SSL_CTX* clientTlsCtx() {
     static SSL_CTX* ctx = [] {
         SSL_CTX* c = SSL_CTX_new(TLS_client_method());

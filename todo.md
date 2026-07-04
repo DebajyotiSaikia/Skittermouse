@@ -29,7 +29,9 @@ is not yet built** — as each item lands, delete it from here.
   item, **auto-discovery pairing** (LAN beacon → pick device by name+IP, no manual IP typing),
   **native file copy/paste** (delay-render IDataObject → on-demand encrypted /files channel), and
   a **file debug log** (`%APPDATA%\Skittermouse\log.txt`); macOS has the Carbon hotkey + NSPanel
-  picker. **Windows WS transport is now wss (Schannel TLS)**; POSIX WS transport for macOS/Linux.
+  picker. **Windows WS transport is plain WS** (transport TLS removed as redundant with app-layer
+  AES-256-GCM; pairing gated by the 6-digit numeric comparison); POSIX WS transport (macOS/Linux)
+  still does TLS, so align the two before any Windows<->macOS pairing.
 - Remaining items are **macOS-only** (see the **macOS** section below); the **Windows product is
   feature-complete**. Two field bugs were just fixed + CI-green:
   (1) one-way discovery when a **VPN** is up — the beacon now sends to every interface's directed

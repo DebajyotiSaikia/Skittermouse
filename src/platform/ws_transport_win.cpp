@@ -1,26 +1,20 @@
-// Windows client/server WebSocket transport over TCP + TLS (spec 5.1/5.5: wss://).
-// Native WinSock2 + Schannel (SSPI), zero third-party. Built on the unit-tested WS
-// handshake (net/ws_handshake) and frame codec (net/ws_frame, net/frame_assembler).
-// TLS is encryption-only (self-signed cert, no verification) -- the app-layer secure
-// link (PSK) is the trust gate, matching the validated POSIX/OpenSSL counterpart.
-// Extensive sm::log lines make the (hardware-only) TLS path debuggable on real PCs.
+// Windows client/server WebSocket transport over plain TCP (spec 5.1/5.5).
+// Native WinSock2, zero third-party. Built on the unit-tested WS handshake
+// (net/ws_handshake) and frame codec (net/ws_frame, net/frame_assembler).
+// Transport-level TLS is intentionally omitted: every message is already encrypted
+// end-to-end by net/encrypted_transport (AES-256-GCM under the pairing PSK) and
+// pairing is gated by the 6-digit numeric comparison, so wss would add no security.
 
 #include "net/ws_transport.h"
 
-#include "core/log.h"
 #include "net/frame_assembler.h"
 #include "net/ws_frame.h"
 #include "net/ws_handshake.h"
 
-#define SECURITY_WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 // windows.h after winsock2.h to avoid the winsock1 clash.
 #include <windows.h>
-#include <schannel.h>
-#include <security.h>
-#include <sspi.h>
-#include <wincrypt.h>
 
 #include <cstring>
 #include <string>
@@ -30,19 +24,6 @@ namespace sm::net {
 
 namespace {
 
-inline void tlog(const std::string& m) { sm::log::write("[tls] " + m); }
-
-// TLS (Schannel) toggle for the Windows transport. Currently OFF: the app already
-// encrypts every message with AES-256-GCM (net/encrypted_transport) and pairing is
-// gated by the 6-digit numeric comparison, so the transport-level TLS is redundant.
-// The Schannel path below was written without real-hardware validation and was found
-// to break the connect()/accept() handshake in the field (TCP succeeds, TLS stalls ->
-// "could not reach"). Keep the code for when it can be debugged on real PCs, but leave
-// it disabled so plain-WS + app-layer GCM (the validated path) is used. NOTE: the peer
-// must match -- the macOS/POSIX transport still does TLS, so a Win<->Mac pair needs
-// this flipped back on together once Schannel is verified.
-constexpr bool kWinTls = false;
-
 // Start WinSock once for the process (OS ref-counts; cleaned up at process exit).
 struct WsaInit {
     WsaInit() {
@@ -50,262 +31,6 @@ struct WsaInit {
         WSAStartup(MAKEWORD(2, 2), &w);
     }
 } g_wsaInit;
-
-// Blocking write of all bytes to a raw (pre-TLS) socket -- used for handshake tokens.
-bool socketSendAll(SOCKET s, const void* data, DWORD len) {
-    const char* p = static_cast<const char*>(data);
-    DWORD sent = 0;
-    while (sent < len) {
-        int n = ::send(s, p + sent, static_cast<int>(len - sent), 0);
-        if (n <= 0) return false;
-        sent += static_cast<DWORD>(n);
-    }
-    return true;
-}
-
-// Ephemeral self-signed cert (+ key) for the TLS server side. Encryption-only: the
-// client never validates it. Returns nullptr on failure.
-PCCERT_CONTEXT makeSelfSignedCert() {
-    BYTE enc[512];
-    DWORD encSize = sizeof(enc);
-    if (!CertStrToNameW(X509_ASN_ENCODING, L"CN=Skittermouse", CERT_X500_NAME_STR, nullptr, enc,
-                        &encSize, nullptr)) {
-        tlog("CertStrToName failed");
-        return nullptr;
-    }
-    CERT_NAME_BLOB subject{encSize, enc};
-    // pKeyProvInfo = nullptr -> a fresh key is generated in a temp container and the
-    // cert's key-prov-info property is set so Schannel can find the private key.
-    PCCERT_CONTEXT cert = CertCreateSelfSignCertificate(0, &subject, 0, nullptr, nullptr, nullptr,
-                                                        nullptr, nullptr);
-    if (!cert) tlog("CertCreateSelfSignCertificate failed err=" + std::to_string(GetLastError()));
-    return cert;
-}
-
-// Schannel TLS channel over one connected socket. Mirrors the OpenSSL logic in
-// ws_transport_posix.cpp (client SSL_connect / server SSL_accept, then stream I/O).
-class SchannelTls {
-public:
-    ~SchannelTls() { dispose(); }
-
-    bool clientHandshake(SOCKET s, const std::string& host) {
-        SCHANNEL_CRED cred{};
-        cred.dwVersion = SCHANNEL_CRED_VERSION;
-        cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION;
-        if (AcquireCredentialsHandleW(nullptr, const_cast<SEC_WCHAR*>(UNISP_NAME_W),
-                                      SECPKG_CRED_OUTBOUND, nullptr, &cred, nullptr, nullptr,
-                                      &cred_, nullptr) != SEC_E_OK) {
-            tlog("client AcquireCredentialsHandle failed");
-            return false;
-        }
-        haveCred_ = true;
-        return handshake(s, /*server*/ false, host);
-    }
-
-    bool serverHandshake(SOCKET s) {
-        serverCert_ = makeSelfSignedCert();
-        if (!serverCert_) return false;
-        SCHANNEL_CRED cred{};
-        cred.dwVersion = SCHANNEL_CRED_VERSION;
-        cred.cCreds = 1;
-        cred.paCred = &serverCert_;
-        if (AcquireCredentialsHandleW(nullptr, const_cast<SEC_WCHAR*>(UNISP_NAME_W),
-                                      SECPKG_CRED_INBOUND, nullptr, &cred, nullptr, nullptr, &cred_,
-                                      nullptr) != SEC_E_OK) {
-            tlog("server AcquireCredentialsHandle failed");
-            return false;
-        }
-        haveCred_ = true;
-        return handshake(s, /*server*/ true, "");
-    }
-
-    // Encrypt + send `len` bytes (blocking). Returns false on error.
-    bool sendData(SOCKET s, const uint8_t* data, std::size_t len) {
-        while (len > 0) {
-            DWORD chunk = static_cast<DWORD>(len < sizes_.cbMaximumMessage ? len
-                                                                           : sizes_.cbMaximumMessage);
-            std::vector<uint8_t> buf(sizes_.cbHeader + chunk + sizes_.cbTrailer);
-            std::memcpy(buf.data() + sizes_.cbHeader, data, chunk);
-            SecBuffer sb[4];
-            sb[0] = {sizes_.cbHeader, SECBUFFER_STREAM_HEADER, buf.data()};
-            sb[1] = {chunk, SECBUFFER_DATA, buf.data() + sizes_.cbHeader};
-            sb[2] = {sizes_.cbTrailer, SECBUFFER_STREAM_TRAILER,
-                     buf.data() + sizes_.cbHeader + chunk};
-            sb[3] = {0, SECBUFFER_EMPTY, nullptr};
-            SecBufferDesc desc{SECBUFFER_VERSION, 4, sb};
-            SECURITY_STATUS ss = EncryptMessage(&ctx_, 0, &desc, 0);
-            if (ss != SEC_E_OK) {
-                tlog("EncryptMessage failed 0x" + std::to_string(ss));
-                return false;
-            }
-            DWORD total = sb[0].cbBuffer + sb[1].cbBuffer + sb[2].cbBuffer;
-            if (!socketSendAll(s, buf.data(), total)) return false;
-            data += chunk;
-            len -= chunk;
-        }
-        return true;
-    }
-
-    // Decrypt available data. Returns >0 bytes into out, 0 on clean close, or -1 with
-    // WSASetLastError(WSAEWOULDBLOCK) when no full record is ready yet.
-    long recvData(SOCKET s, void* out, std::size_t cap) {
-        if (!plain_.empty()) return serve(out, cap);
-        for (;;) {
-            if (!enc_.empty()) {
-                SecBuffer sb[4];
-                sb[0] = {static_cast<DWORD>(enc_.size()), SECBUFFER_DATA, enc_.data()};
-                sb[1] = {0, SECBUFFER_EMPTY, nullptr};
-                sb[2] = {0, SECBUFFER_EMPTY, nullptr};
-                sb[3] = {0, SECBUFFER_EMPTY, nullptr};
-                SecBufferDesc desc{SECBUFFER_VERSION, 4, sb};
-                SECURITY_STATUS ss = DecryptMessage(&ctx_, &desc, 0, nullptr);
-                if (ss == SEC_E_OK) {
-                    std::vector<uint8_t> extra;
-                    for (int i = 1; i < 4; ++i) {
-                        if (sb[i].BufferType == SECBUFFER_DATA && sb[i].cbBuffer)
-                            plain_.insert(plain_.end(), static_cast<uint8_t*>(sb[i].pvBuffer),
-                                          static_cast<uint8_t*>(sb[i].pvBuffer) + sb[i].cbBuffer);
-                        else if (sb[i].BufferType == SECBUFFER_EXTRA && sb[i].cbBuffer)
-                            extra.assign(static_cast<uint8_t*>(sb[i].pvBuffer),
-                                         static_cast<uint8_t*>(sb[i].pvBuffer) + sb[i].cbBuffer);
-                    }
-                    enc_.swap(extra);
-                    if (!plain_.empty()) return serve(out, cap);
-                    continue;
-                }
-                if (ss == SEC_I_CONTEXT_EXPIRED) return 0; // peer closed the TLS session
-                if (ss != SEC_E_INCOMPLETE_MESSAGE) {
-                    tlog("DecryptMessage failed 0x" + std::to_string(ss));
-                    return 0; // fatal -> treat as closed
-                }
-                // fall through: need more encrypted bytes
-            }
-            char tmp[8192];
-            int n = ::recv(s, tmp, sizeof(tmp), 0);
-            if (n == 0) return 0;
-            if (n < 0) {
-                if (WSAGetLastError() == WSAEWOULDBLOCK) {
-                    WSASetLastError(WSAEWOULDBLOCK);
-                    return -1;
-                }
-                return 0;
-            }
-            enc_.insert(enc_.end(), tmp, tmp + n);
-        }
-    }
-
-    void shutdownTls(SOCKET s) {
-        if (!haveCtx_) return;
-        DWORD type = SCHANNEL_SHUTDOWN;
-        SecBuffer sb{sizeof(type), SECBUFFER_TOKEN, &type};
-        SecBufferDesc desc{SECBUFFER_VERSION, 1, &sb};
-        if (ApplyControlToken(&ctx_, &desc) != SEC_E_OK) return;
-        SecBuffer out{0, SECBUFFER_TOKEN, nullptr};
-        SecBufferDesc outDesc{SECBUFFER_VERSION, 1, &out};
-        DWORD flags = ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
-        DWORD of = 0;
-        if (InitializeSecurityContextW(&cred_, &ctx_, nullptr, flags, 0, 0, nullptr, 0, nullptr,
-                                       &outDesc, &of, nullptr) == SEC_E_OK &&
-            out.pvBuffer) {
-            socketSendAll(s, out.pvBuffer, out.cbBuffer);
-            FreeContextBuffer(out.pvBuffer);
-        }
-    }
-
-private:
-    long serve(void* out, std::size_t cap) {
-        std::size_t n = plain_.size() < cap ? plain_.size() : cap;
-        std::memcpy(out, plain_.data(), n);
-        plain_.erase(plain_.begin(), plain_.begin() + n);
-        return static_cast<long>(n);
-    }
-
-    // The SSPI handshake token loop, shared by client (InitializeSecurityContext) and
-    // server (AcceptSecurityContext) roles. Runs on the blocking socket.
-    bool handshake(SOCKET s, bool server, const std::string& host) {
-        const DWORD flags = ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_CONFIDENTIALITY |
-                            ISC_REQ_REPLAY_DETECT | ISC_REQ_SEQUENCE_DETECT | ISC_REQ_STREAM |
-                            ISC_REQ_MANUAL_CRED_VALIDATION;
-        std::wstring whost(host.begin(), host.end());
-        std::vector<uint8_t> in;
-        bool first = true;
-        for (;;) {
-            SecBuffer inBuf[2];
-            inBuf[0] = {static_cast<DWORD>(in.size()), SECBUFFER_TOKEN,
-                        in.empty() ? nullptr : in.data()};
-            inBuf[1] = {0, SECBUFFER_EMPTY, nullptr};
-            SecBufferDesc inDesc{SECBUFFER_VERSION, 2, inBuf};
-            SecBuffer outBuf{0, SECBUFFER_TOKEN, nullptr};
-            SecBufferDesc outDesc{SECBUFFER_VERSION, 1, &outBuf};
-            DWORD of = 0;
-            SECURITY_STATUS ss;
-            if (server) {
-                ss = AcceptSecurityContext(&cred_, haveCtx_ ? &ctx_ : nullptr,
-                                           first ? nullptr : &inDesc, flags, 0,
-                                           haveCtx_ ? nullptr : &ctx_, &outDesc, &of, nullptr);
-            } else {
-                ss = InitializeSecurityContextW(
-                    &cred_, haveCtx_ ? &ctx_ : nullptr,
-                    whost.empty() ? nullptr : const_cast<SEC_WCHAR*>(whost.c_str()), flags, 0, 0,
-                    first ? nullptr : &inDesc, 0, haveCtx_ ? nullptr : &ctx_, &outDesc, &of, nullptr);
-            }
-            haveCtx_ = true;
-            first = false;
-
-            if (outBuf.cbBuffer && outBuf.pvBuffer) {
-                bool sok = socketSendAll(s, outBuf.pvBuffer, outBuf.cbBuffer);
-                FreeContextBuffer(outBuf.pvBuffer);
-                if (!sok) return false;
-            }
-
-            if (ss == SEC_E_OK) {
-                // Preserve any application data that trailed the final token.
-                if (inBuf[1].BufferType == SECBUFFER_EXTRA && inBuf[1].cbBuffer)
-                    enc_.assign(in.end() - inBuf[1].cbBuffer, in.end());
-                if (QueryContextAttributesW(&ctx_, SECPKG_ATTR_STREAM_SIZES, &sizes_) != SEC_E_OK)
-                    return false;
-                tlog(std::string(server ? "server" : "client") + " TLS handshake OK");
-                return true;
-            }
-            if (ss == SEC_I_CONTINUE_NEEDED || ss == SEC_E_INCOMPLETE_MESSAGE) {
-                if (ss == SEC_I_CONTINUE_NEEDED) {
-                    if (inBuf[1].BufferType == SECBUFFER_EXTRA && inBuf[1].cbBuffer) {
-                        std::vector<uint8_t> extra(in.end() - inBuf[1].cbBuffer, in.end());
-                        in.swap(extra);
-                    } else {
-                        in.clear();
-                    }
-                }
-                char tmp[8192];
-                int n = ::recv(s, tmp, sizeof(tmp), 0);
-                if (n <= 0) {
-                    tlog("handshake recv failed n=" + std::to_string(n));
-                    return false;
-                }
-                in.insert(in.end(), tmp, tmp + n);
-                continue;
-            }
-            tlog(std::string(server ? "Accept" : "Initialize") +
-                 "SecurityContext failed 0x" + std::to_string(ss));
-            return false;
-        }
-    }
-
-    void dispose() {
-        if (haveCtx_) { DeleteSecurityContext(&ctx_); haveCtx_ = false; }
-        if (haveCred_) { FreeCredentialsHandle(&cred_); haveCred_ = false; }
-        if (serverCert_) { CertFreeCertificateContext(serverCert_); serverCert_ = nullptr; }
-    }
-
-    CredHandle cred_{};
-    CtxtHandle ctx_{};
-    SecPkgContext_StreamSizes sizes_{};
-    bool haveCred_ = false;
-    bool haveCtx_ = false;
-    PCCERT_CONTEXT serverCert_ = nullptr;
-    std::vector<uint8_t> enc_;   // received, not-yet-decrypted
-    std::vector<uint8_t> plain_; // decrypted, not-yet-consumed
-};
 
 // One WebSocket transport over a connected TCP socket. Per RFC 6455, client-role
 // frames are masked and server-role (accepted) frames are not.
@@ -353,19 +78,6 @@ public:
             return false;
         }
         freeaddrinfo(res);
-
-        // TLS first (spec 5.1: wss://) when enabled. Socket is blocking here so the
-        // SSPI token exchange runs to completion; the WS HTTP handshake then rides over
-        // TLS. Disabled by default (kWinTls) -- see the flag comment; app-layer AES-GCM
-        // still encrypts everything.
-        if constexpr (kWinTls) {
-            if (!tls_.clientHandshake(sock_, host)) {
-                tlog("client TLS handshake failed to " + host);
-                close();
-                return false;
-            }
-            tlsActive_ = true;
-        }
 
         std::string key = wsGenerateClientKey();
         std::string req = wsBuildClientHandshake(host + ":" + portStr, "/input", key);
@@ -415,23 +127,15 @@ public:
 
     void close() override {
         if (sock_ != INVALID_SOCKET) {
-            if (tlsActive_) tls_.shutdownTls(sock_);
             closesocket(sock_);
             sock_ = INVALID_SOCKET;
         }
         connected_ = false;
     }
 
-    // Server-side post-accept sequence: TLS handshake (when enabled), then the WS HTTP
-    // handshake. Called by wsAcceptOne on the accepted (blocking) socket.
+    // Server-side post-accept sequence: the WS HTTP handshake on the accepted
+    // (blocking) socket. Called by wsAcceptOne.
     bool acceptServerSide() {
-        if constexpr (kWinTls) {
-            if (!tls_.serverHandshake(sock_)) {
-                tlog("server TLS handshake failed");
-                return false;
-            }
-            tlsActive_ = true;
-        }
         std::string req;
         char c;
         while (req.find("\r\n\r\n") == std::string::npos) {
@@ -456,16 +160,12 @@ private:
         std::memcpy(buf, f.payload.data(), n);
         return static_cast<int>(n);
     }
-    // Read raw application bytes: through TLS (decrypt) when active, else straight
-    // off the socket. Returns >0 bytes, 0 on clean close, -1 (WSAEWOULDBLOCK) if none
-    // ready. Identical contract for both paths so recv()'s logic is unchanged.
+    // Read raw application bytes off the socket. Returns >0 bytes, 0 on clean close,
+    // -1 (WSAEWOULDBLOCK) when none ready.
     long recvRaw(void* buf, std::size_t cap) {
-        if (tlsActive_) return tls_.recvData(sock_, buf, cap);
-        int n = ::recv(sock_, static_cast<char*>(buf), static_cast<int>(cap), 0);
-        return n;
+        return ::recv(sock_, static_cast<char*>(buf), static_cast<int>(cap), 0);
     }
     bool sendAll(const uint8_t* d, std::size_t len) {
-        if (tlsActive_) return tls_.sendData(sock_, d, len);
         std::size_t sent = 0;
         while (sent < len) {
             int n = ::send(sock_, reinterpret_cast<const char*>(d) + sent,
@@ -503,8 +203,6 @@ private:
     SOCKET sock_ = INVALID_SOCKET;
     bool client_ = true;
     bool connected_ = false;
-    bool tlsActive_ = false;
-    SchannelTls tls_;
     WsFrameAssembler assembler_;
 };
 
@@ -552,8 +250,8 @@ Transport* wsAcceptOne(uint16_t port, int timeoutMs, std::string* outPeerIp) {
             *outPeerIp = ip;
     }
 
-    // The accepted socket is blocking; acceptServerSide runs the TLS + WS handshakes
-    // to completion, then flips it non-blocking for the mesh poll loop.
+    // The accepted socket is blocking; acceptServerSide runs the WS handshake to
+    // completion, then flips it non-blocking for the mesh poll loop.
     auto* t = new WinWsTransport(client, /*client role*/ false);
     if (!t->acceptServerSide()) {
         delete t; // dtor closes the socket

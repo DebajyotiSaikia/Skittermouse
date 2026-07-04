@@ -11,8 +11,9 @@
 namespace sm::net {
 
 // A client WebSocket transport connecting to a peer's listening port. Caller owns.
-// (TLS wrapping via Schannel for full wss:// is the remaining step; message payloads
-// are already AES-256-GCM sealed end-to-end per spec 5.4.)
+// The Windows backend is plain WS (transport TLS omitted -- message payloads are
+// already AES-256-GCM sealed end-to-end per spec 5.4); the POSIX/macOS backend still
+// wraps in TLS, so align the two before any Windows<->macOS pairing.
 Transport* createWsClientTransport();
 
 // Block up to timeoutMs for one incoming connection on `port`, complete the server
